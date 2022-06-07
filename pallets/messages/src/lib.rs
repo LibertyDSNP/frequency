@@ -47,7 +47,10 @@ pub mod pallet {
 		type WeightInfo: WeightInfo;
 
 		/// A type that will supply account related information
-		type AccountProvider: AccountProvider<AccountId = Self::AccountId>;
+		type AccountProvider: AccountProvider<
+			AccountId = Self::AccountId,
+			BlockNumber = Self::BlockNumber,
+		>;
 
 		/// The maximum number of messages in a block
 		#[pallet::constant]
@@ -123,7 +126,7 @@ pub mod pallet {
 		/// Adds a message into storage
 		///
 		/// The dispatch origin for this call must be _Signed_.
-		/// - `on_behalf_of`: Optional. The msa id of delegate.
+		/// - `on_behalf_of`: Optional. The msa id of delegator.
 		/// - `schema_id`: Registered schema id for current message
 		/// - `message`: Serialized message data
 		///
@@ -146,6 +149,7 @@ pub mod pallet {
 				Error::<T>::TooLargeMessage
 			);
 
+			// FAILS HERE
 			let msa_id = T::AccountProvider::get_msa_id(&who);
 			ensure!(msa_id.is_some(), Error::<T>::InvalidMessageSourceAccount);
 

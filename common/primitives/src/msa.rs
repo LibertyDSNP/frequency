@@ -1,7 +1,8 @@
-use codec::{Decode, Encode, MaxEncodedLen};
+use codec::{Codec, Decode, Encode, MaxEncodedLen};
 use scale_info::TypeInfo;
 #[cfg(feature = "std")]
 use serde::{Deserialize, Serialize};
+use sp_runtime::traits::{AtLeast32BitUnsigned, IdentifyAccount};
 
 pub type MessageSenderId = u64;
 

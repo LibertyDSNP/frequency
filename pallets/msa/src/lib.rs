@@ -486,6 +486,7 @@ impl<T: Config> AccountProvider for Pallet<T> {
 	type AccountId = T::AccountId;
 	type BlockNumber = T::BlockNumber;
 	fn get_msa_id(key: &Self::AccountId) -> Option<MessageSenderId> {
+		log::info!("MSA PALLET: {:?} key", key);
 		Self::get_owner_of(key)
 	}
 	fn get_provider_info_of(

@@ -1,3 +1,4 @@
+#![feature(associated_type_defaults)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 pub mod messages;

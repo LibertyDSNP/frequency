@@ -12,6 +12,9 @@ use sp_runtime::{
 };
 use std::fmt::Formatter;
 
+pub(crate) type TestAccountId = u64;
+pub(crate) type TestBlockNumber = u64;
+
 type UncheckedExtrinsic = frame_system::mocking::MockUncheckedExtrinsic<Test>;
 type Block = frame_system::mocking::MockBlock<Test>;
 
@@ -35,11 +38,11 @@ impl system::Config for Test {
 	type Origin = Origin;
 	type Call = Call;
 	type Index = u64;
-	type BlockNumber = u64;
+	type BlockNumber = TestBlockNumber;
 	type Hash = H256;
 	type Hashing = BlakeTwo256;
-	type AccountId = u64;
-	type Lookup = IdentityLookup<Self::AccountId>;
+	type AccountId = TestAccountId;
+	type Lookup = IdentityLookup<TestAccountId>;
 	type Header = Header;
 	type Event = Event;
 	type BlockHashCount = ConstU64<250>;
@@ -81,13 +84,18 @@ impl Clone for MaxMessageSizeInBytes {
 
 pub struct AccountHandler;
 impl AccountProvider for AccountHandler {
-	type AccountId = u64;
-	type BlockNumber = u64;
-	fn get_msa_id(key: &Self::AccountId) -> Option<MessageSenderId> {
-		if *key == 1000 {
+	type AccountId = TestAccountId;
+	type BlockNumber = TestBlockNumber;
+	fn get_msa_id(key: &TestAccountId) -> Option<MessageSenderId> {
+		println!("HERE");
+
+		let key_1000 = 1000 as Self::AccountId;
+		let key_2000 = 2000 as Self::AccountId;
+
+		if *key == key_1000 {
 			return None
 		}
-		if *key == 2000 {
+		if *key == key_2000 {
 			return Some(2000 as MessageSenderId)
 		}
 		Some(get_msa_from_account(*key) as MessageSenderId)
