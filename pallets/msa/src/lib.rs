@@ -55,13 +55,15 @@
 	missing_docs
 )]
 
+use codec::{Decode, Encode};
 use common_primitives::msa::{
 	AccountProvider, Delegator, KeyInfo, KeyInfoResponse, Provider, ProviderInfo,
 };
-use frame_support::{dispatch::DispatchResult, ensure};
+use frame_support::{dispatch::DispatchResult, ensure, traits::IsSubType, weights::DispatchInfo};
 pub use pallet::*;
+use scale_info::TypeInfo;
 use sp_runtime::{
-	traits::{Convert, Verify, Zero},
+	traits::{Convert, DispatchInfoOf, Dispatchable, SignedExtension, Verify, Zero},
 	DispatchError, MultiSignature,
 };
 
@@ -348,7 +350,7 @@ pub mod pallet {
 		/// - Returns [`DelegationNotFound`](Error::DelegationNotFound) if there is not delegation relationship between Origin and Delegator or Origin and Delegator are the same.
 		/// - May also return []
 		///
-		#[pallet::weight(T::WeightInfo::revoke_msa_delegation_by_delegator())]
+		#[pallet::weight((T::WeightInfo::revoke_msa_delegation_by_delegator(), DispatchClass::Normal, Pays::No))]
 		pub fn revoke_msa_delegation_by_delegator(
 			origin: OriginFor<T>,
 			provider_msa_id: MessageSourceId,
@@ -736,5 +738,77 @@ impl<T: Config> AccountProvider for Pallet<T> {
 			})
 		}
 		Ok(result.unwrap())
+	}
+}
+
+/// Check to ensure that a provider has not yet been revoked if the
+/// calling extrinsic is revoking a provider to an msa.
+#[derive(Encode, Decode, Clone, Eq, PartialEq, TypeInfo)]
+#[scale_info(skip_type_params(T))]
+pub struct CheckProviderRevocation<T: Config + Send + Sync>(PhantomData<T>);
+
+impl<T: Config + Send + Sync> CheckProviderRevocation<T> {
+	/// Create new `SignedExtension` to check runtime version.
+	pub fn new() -> Self {
+		Self(sp_std::marker::PhantomData)
+	}
+}
+
+impl<T: Config + Send + Sync> sp_std::fmt::Debug for CheckProviderRevocation<T> {
+	#[cfg(feature = "std")]
+	fn fmt(&self, f: &mut sp_std::fmt::Formatter) -> sp_std::fmt::Result {
+		write!(f, "CheckProviderRevocation<{:?}>", self.0)
+	}
+	#[cfg(not(feature = "std"))]
+	fn fmt(&self, _: &mut sp_std::fmt::Formatter) -> sp_std::fmt::Result {
+		Ok(())
+	}
+}
+
+impl<T: Config + Send + Sync> SignedExtension for CheckProviderRevocation<T>
+where
+	T::Call: Dispatchable<Info = DispatchInfo> + IsSubType<Call<T>>,
+{
+	type AccountId = T::AccountId;
+	type Call = T::Call;
+	type AdditionalSigned = ();
+	type Pre = ();
+	const IDENTIFIER: &'static str = "CheckProviderRevocation";
+
+	fn additional_signed(&self) -> sp_std::result::Result<(), TransactionValidityError> {
+		Ok(())
+	}
+
+	fn pre_dispatch(
+		self,
+		who: &Self::AccountId,
+		call: &Self::Call,
+		info: &DispatchInfoOf<Self::Call>,
+		len: usize,
+	) -> Result<Self::Pre, TransactionValidityError> {
+		self.validate(who, call, info, len).map(|_| ())
+	}
+
+	fn validate(
+		&self,
+		who: &Self::AccountId,
+		call: &Self::Call,
+		_info: &DispatchInfoOf<Self::Call>,
+		_len: usize,
+	) -> TransactionValidity {
+		match call.is_sub_type() {
+			Some(Call::revoke_msa_delegation_by_delegator { provider_msa_id, .. }) => {
+				let delegator_msa_id: Delegator = Pallet::<T>::ensure_valid_msa_key(&who)
+					.map_err(|_| InvalidTransaction::Payment)?
+					.msa_id
+					.into();
+				let provider_msa_id = Provider(*provider_msa_id);
+
+				Pallet::<T>::ensure_valid_delegation(provider_msa_id, delegator_msa_id)
+					.map_err(|_| InvalidTransaction::Payment)?;
+				return Ok(Default::default())
+			},
+			_ => return Ok(Default::default()),
+		}
 	}
 }

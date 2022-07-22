@@ -1,3 +1,4 @@
+// use super::*;
 use crate as pallet_msa;
 use frame_support::{
 	parameter_types,
@@ -10,6 +11,8 @@ use sp_runtime::{
 	traits::{BlakeTwo256, ConvertInto, IdentifyAccount, IdentityLookup, Verify},
 	AccountId32, MultiSignature,
 };
+
+pub use pallet_msa::Call as MsaCall;
 
 pub type AccountId = <<MultiSignature as Verify>::Signer as IdentifyAccount>::AccountId;
 
