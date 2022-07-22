@@ -138,6 +138,8 @@ pub mod pallet {
 		InvalidSchemaId,
 		/// UnAuthorizedDelegate
 		UnAuthorizedDelegate,
+		/// Invalid payload location
+		InvalidPayloadLocation,
 	}
 
 	#[pallet::event]
@@ -165,6 +167,50 @@ pub mod pallet {
 
 	#[pallet::call]
 	impl<T: Config> Pallet<T> {
+		/// Adds a message for an offchain resource
+		/// # Arguments
+		/// * `origin` - A signed transaction origin from the provider
+		/// * `on_behalf_of` - Optional. The msa id of delegate.
+		/// * `schema_id` - Registered schema id for current message.
+		/// * `cid` - The content address for an IPFS payload
+		/// * `payload_length` - The size of the payload
+		/// * Returns
+		/// * [DispatchResultWithPostInfo](https://paritytech.github.io/substrate/master/frame_support/dispatch/type.DispatchResultWithPostInfo.html)
+		#[pallet::weight(T::WeightInfo::add_offchain(cid.get().len() as u32, 1_000))]
+		pub fn add_offchain(
+			origin: OriginFor<T>,
+			on_behalf_of: Option<MessageSourceId>,
+			schema_id: SchemaId,
+			cid: CIDv2,
+			payload_length: u32,
+		) -> DispatchResultWithPostInfo {
+			let provider_key = ensure_signed(origin)?;
+
+			// TODO: Is there a size limit on offchain payloads?
+
+			let schema = T::SchemaProvider::get_schema_by_id(schema_id);
+			ensure!(schema.is_some(), Error::<T>::InvalidSchemaId);
+			ensure!(
+				schema.unwrap().payload_location == PayloadLocation::IPFS,
+				Error::<T>::InvalidPayloadLocation
+			);
+
+			let message_source_id = Self::find_msa_id(&provider_key, on_behalf_of)?;
+
+			let payload = OffchainPayload::new(cid, payload_length);
+			let message = Self::add_message(
+				provider_key,
+				message_source_id,
+				Payload::Offchain(payload),
+				schema_id,
+			)?;
+
+			Ok(Some(T::WeightInfo::add_offchain(
+				message.payload.len() as u32,
+				message.index as u32,
+			))
+			.into())
+		}
 		/// Gets a messages for a given schema-id and block-number.
 		/// # Arguments
 		/// * `origin` - A signed transaction origin from the provider
@@ -190,10 +236,19 @@ pub mod pallet {
 
 			let schema = T::SchemaProvider::get_schema_by_id(schema_id);
 			ensure!(schema.is_some(), Error::<T>::InvalidSchemaId);
+			ensure!(
+				schema.unwrap().payload_location == PayloadLocation::OnChain,
+				Error::<T>::InvalidPayloadLocation
+			);
 
 			let message_source_id = Self::find_msa_id(&provider_key, on_behalf_of)?;
 
-			let message = Self::add_message(provider_key, message_source_id, payload, schema_id)?;
+			let message = Self::add_message(
+				provider_key,
+				message_source_id,
+				Payload::Onchain(payload),
+				schema_id,
+			)?;
 
 			Ok(Some(T::WeightInfo::add(message.payload.len() as u32, message.index as u32)).into())
 		}
@@ -212,7 +267,7 @@ impl<T: Config> Pallet<T> {
 	pub fn add_message(
 		provider_key: T::AccountId,
 		message_source_id: MessageSourceId,
-		payload: Vec<u8>,
+		payload: Payload,
 		schema_id: SchemaId,
 	) -> Result<Message<T::AccountId, T::MaxMessagePayloadSizeBytes>, DispatchError> {
 		<BlockMessages<T>>::try_mutate(|existing_messages| -> Result<Message<T::AccountId, T::MaxMessagePayloadSizeBytes>, DispatchError> {
@@ -222,7 +277,7 @@ impl<T: Config> Pallet<T> {
 				.map_err(|_| Error::<T>::TypeConversionOverflow)?;
 
 			let msg = Message {
-				payload: payload.try_into().unwrap(), // size is checked on top of extrinsic
+				payload: Self::payload_to_message(payload), // size is checked on top of extrinsic
 				provider_key,
 				index: current_size,
 				msa_id: message_source_id,
@@ -234,6 +289,17 @@ impl<T: Config> Pallet<T> {
 
 			Ok(msg)
 		})
+	}
+
+	/// Converts a Payload to a message string
+	pub fn payload_to_message(payload: Payload) -> BoundedVec<u8, T::MaxMessagePayloadSizeBytes> {
+		match payload {
+			Payload::Onchain(payload_vec) => payload_vec.try_into().unwrap(),
+			// TODO: What is the right way to format an offchain payload? May need to
+			// table until #190 is picked up.
+			Payload::Offchain(offchain_payload) =>
+				offchain_payload.cid.get().clone().try_into().unwrap(),
+		}
 	}
 
 	/// Resolves an MSA.
