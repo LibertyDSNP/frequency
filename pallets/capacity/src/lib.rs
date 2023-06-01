@@ -69,10 +69,7 @@ pub use common_primitives::{
 
 #[cfg(feature = "runtime-benchmarks")]
 use common_primitives::benchmarks::RegisterProviderBenchmarkHelper;
-use common_primitives::{
-	capacity::StakingType,
-	node::{RewardEra},
-};
+use common_primitives::{capacity::StakingType, node::RewardEra};
 
 pub use pallet::*;
 pub use types::*;
@@ -83,7 +80,6 @@ pub mod types;
 mod benchmarking;
 
 #[cfg(test)]
-mod tests;
 mod tests;
 
 pub mod weights;
@@ -97,7 +93,6 @@ use frame_system::pallet_prelude::*;
 pub mod pallet {
 	use super::*;
 
-	use common_primitives::capacity::{StakingType};
 	use frame_support::{pallet_prelude::*, Twox64Concat};
 	use sp_runtime::traits::{AtLeast32BitUnsigned, MaybeDisplay};
 
@@ -159,7 +154,7 @@ pub mod pallet {
 
 		/// A period of `EraLength` blocks in which a Staking Pool applies and
 		/// when Staking Rewards may be earned.
-		type Era: Parameter
+		type RewardEra: Parameter
 			+ Member
 			+ MaybeSerializeDeserialize
 			+ MaybeDisplay
@@ -169,14 +164,17 @@ pub mod pallet {
 			+ sp_std::hash::Hash
 			+ MaxEncodedLen
 			+ TypeInfo;
+
 		/// The number of blocks in a Staking Era
 		#[pallet::constant]
 		type EraLength: Get<u32>;
+
 		/// The maximum number of eras over which one can claim rewards
 		#[pallet::constant]
 		type StakingRewardsPastErasMax: Get<u32>;
-		/// The StakingRewardsProvider used by this pallet in a given runtime
-		type RewardsProvider: StakingRewardsProvider<Self>;
+
+		// The StakingRewardsProvider used by this pallet in a given runtime
+		// type RewardsProvider: StakingRewardsProvider<Self>;
 	}
 
 	/// Storage for keeping a ledger of staked token amounts for accounts.
@@ -320,7 +318,7 @@ pub mod pallet {
 		/// The Era specified is too far in the past or is in the future
 		EraOutOfRange,
 		/// Rewards were already paid out for the specified Era range
-		StakingAccountIneligibleForPayout,
+		IneligibleForPayoutInEraRange,
 	}
 
 	#[pallet::hooks]
