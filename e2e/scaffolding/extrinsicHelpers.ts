@@ -419,6 +419,10 @@ export class ExtrinsicHelper {
         return new Extrinsic(() => ExtrinsicHelper.api.tx.capacity.stake(target, amount, stakingType), keys, ExtrinsicHelper.api.events.capacity.Staked);
     }
 
+    public static providerBoost(keys: KeyringPair, target: any, amount: any) {
+        return new Extrinsic(() => ExtrinsicHelper.api.tx.capacity.providerBoost(target, amount), keys, ExtrinsicHelper.api.events.capacity.ProviderBoosted);
+    }
+
     public static unstake(keys: KeyringPair, target: any, amount: any) {
         return new Extrinsic(() => ExtrinsicHelper.api.tx.capacity.unstake(target, amount), keys, ExtrinsicHelper.api.events.capacity.UnStaked);
     }
