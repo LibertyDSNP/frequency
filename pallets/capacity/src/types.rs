@@ -6,7 +6,7 @@ use frame_support::{
 };
 use scale_info::TypeInfo;
 use sp_runtime::{
-	traits::{AtLeast32BitUnsigned, CheckedAdd, CheckedSub, Saturating, Zero},
+	traits::{AtLeast32BitUnsigned, CheckedAdd, CheckedSub, Get, Saturating, Zero},
 	RuntimeDebug,
 };
 
@@ -26,20 +26,15 @@ pub struct StakingAccountDetails<T: Config> {
 	pub total: BalanceOf<T>,
 	/// Unstaked balances that are thawing or awaiting withdrawal.
 	pub unlocking: BoundedVec<UnlockChunk<BalanceOf<T>, T::EpochNumber>, T::MaxUnlockingChunks>,
-	/// The None or Some(number): never, or the last RewardEra that this account's rewards were claimed.
-	pub last_rewards_claimed_at: Option<T::RewardEra>,
-	/// Chunks that have been retargeted within T::UnstakingThawPeriod
-	pub stake_change_unlocking:
-		BoundedVec<UnlockChunk<BalanceOf<T>, T::RewardEra>, T::MaxUnlockingChunks>,
 }
 
 /// The type that is used to record a single request for a number of tokens to be unlocked.
 #[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen)]
-pub struct UnlockChunk<Balance, EpochNumber> {
+pub struct UnlockChunk<Balance, ThawType> {
 	/// Amount to be unlocked.
 	pub value: Balance,
 	/// Block number at which point funds are unlocked.
-	pub thaw_at: EpochNumber,
+	pub thaw_at: ThawType,
 }
 
 impl<T: Config> StakingAccountDetails<T> {
@@ -102,37 +97,6 @@ impl<T: Config> StakingAccountDetails<T> {
 		total_reaped
 	}
 
-	#[cfg(any(feature = "runtime-benchmarks", test))]
-	#[allow(clippy::unwrap_used)]
-	/// for testing and benchmarks only!
-	/// set stake_change_unlocking chunks with (balance, thaw_at).  does not check that the unlock chunks
-	/// don't exceed total.
-	/// returns true on success, false on failure (?)
-	pub fn set_stake_change_unlock_chunks(&mut self, chunks: &Vec<(u32, u32)>) -> bool {
-		let result: Vec<UnlockChunk<BalanceOf<T>, <T>::EpochNumber>> = chunks
-			.into_iter()
-			.map(|chunk| UnlockChunk { value: chunk.0.into(), thaw_at: chunk.1.into() })
-			.collect();
-		self.unlocking = BoundedVec::try_from(result).unwrap();
-		self.unlocking.len() == chunks.len()
-	}
-
-	/// update unlock chunks; remove those that have expired and add the new one
-	// this doesn't affect staking amount, just controls how often a staker may retarget
-	pub fn update_stake_change_unlocking(
-		&mut self,
-		new_chunk_amount: &BalanceOf<T>,
-		thaw_at: &T::RewardEra,
-		current_era: &T::RewardEra,
-	) -> Result<(), DispatchError> {
-		self.stake_change_unlocking.retain(|chunk| current_era.lt(&chunk.thaw_at));
-		let unlock_chunk = UnlockChunk { value: *new_chunk_amount, thaw_at: *thaw_at };
-		self.stake_change_unlocking
-			.try_push(unlock_chunk)
-			.map_err(|_| Error::<T>::MaxUnlockingChunksExceeded)?;
-		Ok(())
-	}
-
 	/// Decrease the amount of active stake by an amount and create an UnlockChunk.
 	pub fn withdraw(
 		&mut self,
@@ -163,49 +127,40 @@ impl<T: Config> StakingAccountDetails<T> {
 		self.active = new_active;
 		Ok(actual_unstaked)
 	}
+
+	// pub fn update_staking_history();
 }
 
 impl<T: Config> Default for StakingAccountDetails<T> {
 	fn default() -> Self {
-		Self {
-			active: Zero::zero(),
-			total: Zero::zero(),
-			unlocking: BoundedVec::default(),
-			last_rewards_claimed_at: None,
-			stake_change_unlocking: BoundedVec::default(),
-		}
+		Self { active: Zero::zero(), total: Zero::zero(), unlocking: Default::default() }
 	}
 }
 
 /// Details about the total token amount targeted to an MSA.
 /// The Capacity that the target will receive.
-#[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen)]
-#[scale_info(skip_type_params(T))]
-pub struct StakingTargetDetails<T: Config> {
+#[derive(
+	PartialEq, Eq, Clone, Copy, Default, Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen,
+)]
+pub struct StakingTargetDetails<Balance>
+where
+	Balance: Default + Saturating + Copy + CheckedAdd + CheckedSub,
+{
 	/// The total amount of tokens that have been targeted to the MSA.
-	pub amount: BalanceOf<T>,
+	pub amount: Balance,
 	/// The total Capacity that an MSA received.
-	pub capacity: BalanceOf<T>,
+	pub capacity: Balance,
 	/// The type of staking, which determines ultimate capacity per staked token.
 	pub staking_type: StakingType,
 }
 
-impl<T: Config> Default for StakingTargetDetails<T> {
-	fn default() -> Self {
-		Self {
-			amount: Zero::zero(),
-			capacity: Zero::zero(),
-			staking_type: StakingType::MaximumCapacity,
-		}
-	}
-}
-
-impl<T: Config> StakingTargetDetails<T> {
+impl<Balance: Default + Saturating + Copy + CheckedAdd + CheckedSub + PartialOrd>
+	StakingTargetDetails<Balance>
+{
 	/// Increase an MSA target Staking total and Capacity amount.
-	pub fn deposit(&mut self, amount: BalanceOf<T>, capacity: BalanceOf<T>) -> Option<()> {
+	pub fn deposit(&mut self, amount: Balance, capacity: Balance) -> Option<()> {
 		self.amount = amount.checked_add(&self.amount)?;
 		self.capacity = capacity.checked_add(&self.capacity)?;
-
 		Some(())
 	}
 
@@ -214,13 +169,14 @@ impl<T: Config> StakingTargetDetails<T> {
 	/// Return the actual amounts withdrawn.
 	pub fn withdraw(
 		&mut self,
-		amount: BalanceOf<T>,
-		capacity: BalanceOf<T>,
-	) -> (BalanceOf<T>, BalanceOf<T>) {
+		amount: Balance,
+		capacity: Balance,
+		minimum: Balance,
+	) -> (Balance, Balance) {
 		let entire_amount = self.amount;
 		let entire_capacity = self.capacity;
 		self.amount = self.amount.saturating_sub(amount);
-		if self.amount.lt(&T::MinimumStakingAmount::get()) {
+		if self.amount.lt(&minimum) {
 			*self = Self::default();
 			return (entire_amount, entire_capacity)
 		} else {
@@ -401,4 +357,97 @@ pub struct RewardPoolInfo<Balance> {
 	pub total_reward_pool: Balance,
 	/// the remaining rewards balance to be claimed
 	pub unclaimed_balance: Balance,
+}
+
+// TODO: Store retarget unlock chunks in their own storage but can be for any stake type
+// TODO: Store unstake unlock chunks in their own storage but can be for any stake type (at first do only boosted unstake)
+
+/// A record of a staked amount for a complete RewardEra
+#[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen)]
+pub struct StakingHistory<Balance, RewardEra> {
+	/// The era this amount was staked
+	pub reward_era: RewardEra,
+	/// The total amount staked for the era
+	pub total_staked: Balance,
+}
+
+/// Details for a Provider Boost stake
+#[derive(
+	TypeInfo, RuntimeDebugNoBound, PartialEqNoBound, EqNoBound, Clone, Decode, Encode, MaxEncodedLen,
+)]
+#[scale_info(skip_type_params(T))]
+pub struct BoostingAccountDetails<T: Config> {
+	/// The staking account details for this boosting account
+	pub staking_details: StakingAccountDetails<T>,
+	/// The reward era that rewards were last claimed for this account
+	pub last_rewards_claimed_at: Option<T::RewardEra>,
+	/// Provider Boost Staking amounts for eras up to StakingRewardsPastErasMax
+	/// Note that this is updated only on a stake change.
+	pub boost_history:
+		BoundedVec<StakingHistory<BalanceOf<T>, T::RewardEra>, T::StakingRewardsPastErasMax>,
+}
+
+impl<T: Config> Default for BoostingAccountDetails<T> {
+	fn default() -> Self {
+		Self {
+			staking_details: StakingAccountDetails::default(),
+			last_rewards_claimed_at: None,
+			boost_history: BoundedVec::default(),
+		}
+	}
+}
+
+impl<T: Config> BoostingAccountDetails<T> {
+	/// Increases total balance and active_boost balance by amount and adds a StakingHistory
+	pub fn deposit_boost(&mut self, amount: BalanceOf<T>, reward_era: T::RewardEra) -> Option<()> {
+		self.staking_details.deposit(amount);
+		self.push_boost_history(StakingHistory { reward_era, total_staked: amount })
+	}
+
+	// Question:  if you do a bunch of boosting so that you fill up your boost history, but it's not
+	// expired, what do we do? prevent you from staking?
+	fn push_boost_history(
+		&mut self,
+		staking_history: StakingHistory<BalanceOf<T>, T::RewardEra>,
+	) -> Option<()> {
+		// TODO: check & restrict StakingHistory length
+		if self.boost_history.try_push(staking_history).is_err() {
+			return None
+		}
+		Some(())
+	}
+}
+
+/// Struct with utilities for storing and updating unlock chunks
+#[derive(Debug, TypeInfo, PartialEqNoBound, EqNoBound, Clone, Decode, Encode, MaxEncodedLen)]
+#[scale_info(skip_type_params(T))]
+pub struct RetargetInfo<T: Config> {
+	/// How many times the account has retargeted this RewardEra
+	pub retarget_count: u32,
+	/// The last RewardEra they retargeted
+	pub last_retarget_at: T::RewardEra,
+}
+
+impl<T: Config> Default for RetargetInfo<T> {
+	fn default() -> Self {
+		Self { retarget_count: 0u32, last_retarget_at: Zero::zero() }
+	}
+}
+
+impl<T: Config> RetargetInfo<T> {
+	/// Increment retarget count and return Some() or
+	/// If there are too many, return None
+	pub fn update(&mut self, current_era: T::RewardEra) -> Option<()> {
+		let max_retargets = T::MaxRetargetsPerRewardEra::get();
+		if self.retarget_count.ge(&max_retargets) && self.last_retarget_at.eq(&current_era) {
+			return None
+		}
+		if self.last_retarget_at.lt(&current_era) {
+			self.last_retarget_at = current_era;
+			self.retarget_count = 1;
+		} else {
+			self.retarget_count = self.retarget_count.saturating_add(1u32);
+		}
+		Some(())
+	}
 }

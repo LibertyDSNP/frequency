@@ -69,7 +69,10 @@ pub use common_primitives::{
 
 #[cfg(feature = "runtime-benchmarks")]
 use common_primitives::benchmarks::RegisterProviderBenchmarkHelper;
-use common_primitives::capacity::StakingType;
+use common_primitives::capacity::{
+	StakingType,
+	StakingType::{MaximumCapacity, ProviderBoost},
+};
 
 pub use pallet::*;
 pub use types::*;
@@ -95,7 +98,6 @@ pub mod pallet {
 	use super::*;
 	use codec::EncodeLike;
 
-	use common_primitives::capacity::StakingType;
 	use frame_support::{pallet_prelude::*, Twox64Concat};
 	use sp_runtime::traits::{AtLeast32BitUnsigned, MaybeDisplay};
 
@@ -124,7 +126,7 @@ pub mod pallet {
 		/// The maximum number of unlocking chunks a StakingAccountLedger can have.
 		/// It determines how many concurrent unstaked chunks may exist.
 		#[pallet::constant]
-		type MaxUnlockingChunks: Get<u32>;
+		type MaxUnlockingChunks: Get<u32> + Clone;
 
 		#[cfg(feature = "runtime-benchmarks")]
 		/// A set of helper functions for benchmarking.
@@ -170,22 +172,20 @@ pub mod pallet {
 			+ Into<BalanceOf<Self>>
 			+ TypeInfo;
 
-		/// The number of blocks in a Staking Era
+		/// The number of blocks in a RewardEra
 		#[pallet::constant]
 		type EraLength: Get<u32>;
 
 		/// The maximum number of eras over which one can claim rewards
 		#[pallet::constant]
-		type StakingRewardsPastErasMax: Get<Self::RewardEra>;
+		type StakingRewardsPastErasMax: Get<u32>;
 
 		/// The StakingRewardsProvider used by this pallet in a given runtime
 		type RewardsProvider: StakingRewardsProvider<Self>;
 
-		/// After calling change_staking_target, the thaw period  for the created
-		/// thaw chunk to expire. If the staker has called change_staking_target MaxUnlockingChunks
-		/// times, then at least one of the chunks must have expired before the next call
-		/// will succeed.
-		type ChangeStakingTargetThawEras: Get<Self::RewardEra>;
+		/// A staker may not retarget more than MaxRetargetsPerRewardEra
+		#[pallet::constant]
+		type MaxRetargetsPerRewardEra: Get<u32>;
 	}
 
 	/// Storage for keeping a ledger of staked token amounts for accounts.
@@ -207,7 +207,7 @@ pub mod pallet {
 		T::AccountId,
 		Twox64Concat,
 		MessageSourceId,
-		StakingTargetDetails<T>,
+		StakingTargetDetails<BalanceOf<T>>,
 	>;
 
 	/// Storage for target Capacity usage.
@@ -254,6 +254,17 @@ pub mod pallet {
 	#[pallet::getter(fn get_reward_pool_for_era)]
 	pub type StakingRewardPool<T: Config> =
 		CountedStorageMap<_, Twox64Concat, T::RewardEra, RewardPoolInfo<BalanceOf<T>>>;
+
+	/// Ledger of accounts that have staked for provider boosting
+	#[pallet::storage]
+	#[pallet::getter(fn get_boost_details_for)]
+	pub type BoostingAccountLedger<T: Config> =
+		StorageMap<_, Twox64Concat, T::AccountId, BoostingAccountDetails<T>>;
+
+	/// stores how many times an account has retargeted, and when it last retargeted.
+	#[pallet::storage]
+	#[pallet::getter(fn get_retargets_for)]
+	pub type Retargets<T: Config> = StorageMap<_, Twox64Concat, T::AccountId, RetargetInfo<T>>;
 
 	#[pallet::pallet]
 	pub struct Pallet<T>(_);
@@ -368,6 +379,10 @@ pub mod pallet {
 		CannotRetargetToSameProvider,
 		/// Rewards were already paid out this era
 		AlreadyClaimedRewardsThisEra,
+		/// Caller must wait until the next RewardEra, claim rewards and then can boost again.
+		MustFirstClaimRewards,
+		/// Too many change_staking_target calls made in this RewardEra.
+		MaxRetargetsExceeded,
 	}
 
 	#[pallet::hooks]
@@ -395,17 +410,15 @@ pub mod pallet {
 			amount: BalanceOf<T>,
 		) -> DispatchResult {
 			let staker = ensure_signed(origin)?;
-			let staking_type = StakingType::MaximumCapacity;
 
 			let (mut staking_account, actual_amount) =
-				Self::ensure_can_stake(&staker, &target, &amount, &staking_type)?;
+				Self::ensure_can_stake(&staker, &target, &amount)?;
 
 			let capacity = Self::increase_stake_and_issue_capacity(
 				&staker,
 				&mut staking_account,
 				&target,
 				&actual_amount,
-				&staking_type,
 			)?;
 
 			Self::deposit_event(Event::Staked {
@@ -429,6 +442,7 @@ pub mod pallet {
 		pub fn withdraw_unstaked(origin: OriginFor<T>) -> DispatchResult {
 			let staker = ensure_signed(origin)?;
 
+			// TODO: boost vs stake
 			let mut staking_account =
 				Self::get_staking_account_for(&staker).ok_or(Error::<T>::NotAStakingAccount)?;
 
@@ -501,13 +515,13 @@ pub mod pallet {
 		/// Changing a staking target to a Provider when Origin has nothing staked them will retain the staking type.
 		/// Changing a staking target to a Provider when Origin has any amount staked to them will error if the staking types are not the same.
 		/// ### Errors
-		/// - [`Error::NotAStakingAccount`] if origin does not have a staking account
 		/// - [`Error::MaxUnlockingChunksExceeded`] if `stake_change_unlocking_chunks` == `T::MaxUnlockingChunks`
 		/// - [`Error::StakerTargetRelationshipNotFound`] if `from` is not a target for Origin's staking account.
 		/// - [`Error::StakingAmountBelowMinimum`] if `amount` to retarget is below the minimum staking amount.
 		/// - [`Error::InsufficientStakingBalance`] if `amount` to retarget exceeds what the staker has targeted to `from` MSA Id.
 		/// - [`Error::InvalidTarget`] if `to` does not belong to a registered Provider.
 		/// - [`Error::CannotChangeStakingType`] if origin already has funds staked for `to` and the staking type for `from` is different.
+		/// - [`Error::MaxRetargetsExceeded`] if origin has reached the maximimum number of retargets for the current RewardEra.
 		#[pallet::call_index(4)]
 		#[pallet::weight(T::WeightInfo::unstake())]
 		pub fn change_staking_target(
@@ -517,15 +531,12 @@ pub mod pallet {
 			amount: BalanceOf<T>,
 		) -> DispatchResult {
 			let staker = ensure_signed(origin)?;
-
+			// This will bounce immediately if they've tried to do this too many times.
+			Self::update_retarget_record(&staker)?;
 			ensure!(from.ne(&to), Error::<T>::CannotRetargetToSameProvider);
 			ensure!(
 				amount >= T::MinimumStakingAmount::get(),
 				Error::<T>::StakingAmountBelowMinimum
-			);
-			ensure!(
-				StakingAccountLedger::<T>::contains_key(&staker),
-				Error::<T>::NotAStakingAccount
 			);
 
 			let current_target = Self::get_target_for(&staker, &from)
@@ -559,17 +570,14 @@ pub mod pallet {
 			amount: BalanceOf<T>,
 		) -> DispatchResult {
 			let staker = ensure_signed(origin)?;
-			let staking_type = StakingType::ProviderBoost;
+			let (mut boosting_details, actual_amount) =
+				Self::ensure_can_boost(&staker, &target, &amount)?;
 
-			let (mut staking_account, actual_amount) =
-				Self::ensure_can_stake(&staker, &target, &amount, &staking_type)?;
-
-			let capacity = Self::increase_stake_and_issue_capacity(
+			let capacity = Self::increase_stake_and_issue_boost(
 				&staker,
-				&mut staking_account,
+				&mut boosting_details,
 				&target,
 				&actual_amount,
-				&staking_type,
 			)?;
 
 			Self::deposit_event(Event::ProviderBoosted {
@@ -587,6 +595,7 @@ pub mod pallet {
 impl<T: Config> Pallet<T> {
 	/// Checks to see if staker has sufficient free-balance to stake the minimum required staking amount,
 	/// and leave the minimum required free balance after staking.
+	/// This function should not mutate any records.
 	///
 	/// # Errors
 	/// * [`Error::StakingAmountBelowMinimum`]
@@ -597,23 +606,12 @@ impl<T: Config> Pallet<T> {
 		staker: &T::AccountId,
 		target: &MessageSourceId,
 		amount: &BalanceOf<T>,
-		staking_type: &StakingType,
 	) -> Result<(StakingAccountDetails<T>, BalanceOf<T>), DispatchError> {
-		ensure!(amount > &Zero::zero(), Error::<T>::StakingAmountBelowMinimum);
+		ensure!(amount.gt(&Zero::zero()), Error::<T>::StakingAmountBelowMinimum);
 		ensure!(T::TargetValidator::validate(*target), Error::<T>::InvalidTarget);
 
 		let staking_account: StakingAccountDetails<T> =
-			Self::get_staking_account_for(&staker).unwrap_or_default();
-
-		let staking_target: StakingTargetDetails<T> =
-			Self::get_target_for(&staker, target).unwrap_or_default();
-		// if total > 0 the account exists already. Prevent the staking type from being changed.
-		if staking_target.amount > Zero::zero() {
-			ensure!(
-				staking_target.staking_type == *staking_type,
-				Error::<T>::CannotChangeStakingType
-			);
-		}
+			Self::get_staking_account_for(staker).unwrap_or_default();
 
 		let stakable_amount = staking_account.get_stakable_amount_for(&staker, *amount);
 
@@ -632,6 +630,24 @@ impl<T: Config> Pallet<T> {
 		Ok((staking_account, stakable_amount))
 	}
 
+	fn ensure_can_boost(
+		staker: &T::AccountId,
+		target: &MessageSourceId,
+		amount: &BalanceOf<T>,
+	) -> Result<(BoostingAccountDetails<T>, BalanceOf<T>), DispatchError> {
+		ensure!(amount.gt(&Zero::zero()), Error::<T>::StakingAmountBelowMinimum);
+		ensure!(T::TargetValidator::validate(*target), Error::<T>::InvalidTarget);
+		let account_details: BoostingAccountDetails<T> =
+			Self::get_boost_details_for(staker).unwrap_or_default();
+
+		ensure!(!account_details.boost_history.is_full(), Error::<T>::MustFirstClaimRewards);
+
+		let stakable_amount =
+			account_details.staking_details.get_stakable_amount_for(&staker, *amount);
+		ensure!(stakable_amount > Zero::zero(), Error::<T>::BalanceTooLowtoStake);
+		Ok((account_details, stakable_amount))
+	}
+
 	/// Increase a staking account and target account balances by amount.
 	/// Additionally, it issues Capacity to the MSA target.
 	fn increase_stake_and_issue_capacity(
@@ -639,19 +655,17 @@ impl<T: Config> Pallet<T> {
 		staking_account: &mut StakingAccountDetails<T>,
 		target: &MessageSourceId,
 		amount: &BalanceOf<T>,
-		staking_type: &StakingType,
 	) -> Result<BalanceOf<T>, DispatchError> {
 		staking_account.deposit(*amount).ok_or(ArithmeticError::Overflow)?;
 
-		let capacity = if staking_type.eq(&StakingType::ProviderBoost) {
-			Self::capacity_generated(T::RewardsProvider::capacity_boost(*amount))
-		} else {
-			Self::capacity_generated(*amount)
-		};
+		let capacity = Self::capacity_generated(*amount);
 
 		let mut target_details = Self::get_target_for(staker, target).unwrap_or_default();
+		ensure!(
+			target_details.staking_type == MaximumCapacity,
+			Error::<T>::CannotChangeStakingType
+		);
 		target_details.deposit(*amount, capacity).ok_or(ArithmeticError::Overflow)?;
-		target_details.staking_type = staking_type.clone();
 
 		let mut capacity_details = Self::get_capacity_for(target).unwrap_or_default();
 		capacity_details.deposit(amount, &capacity).ok_or(ArithmeticError::Overflow)?;
@@ -663,17 +677,75 @@ impl<T: Config> Pallet<T> {
 		Ok(capacity)
 	}
 
-	/// Sets staking account details.
+	fn increase_stake_and_issue_boost(
+		staker: &T::AccountId,
+		boosting_account_details: &mut BoostingAccountDetails<T>,
+		target: &MessageSourceId,
+		amount: &BalanceOf<T>,
+	) -> Result<BalanceOf<T>, DispatchError> {
+		let era = Self::get_current_era().era_index;
+		boosting_account_details
+			.deposit_boost(*amount, era)
+			.ok_or(ArithmeticError::Overflow)?;
+
+		let capacity = Self::capacity_generated(T::RewardsProvider::capacity_boost(*amount));
+
+		let mut target_details = Self::get_target_for(staker, target).unwrap_or_default();
+		if target_details.amount.is_zero() {
+			target_details.staking_type = ProviderBoost;
+		} else {
+			ensure!(
+				target_details.staking_type == ProviderBoost,
+				Error::<T>::CannotChangeStakingType
+			);
+		}
+
+		target_details.deposit(*amount, capacity).ok_or(ArithmeticError::Overflow)?;
+
+		let mut capacity_details = Self::get_capacity_for(target).unwrap_or_default();
+		capacity_details.deposit(amount, &capacity).ok_or(ArithmeticError::Overflow)?;
+
+		Self::set_boosting_account(staker, boosting_account_details);
+		Self::set_target_details_for(staker, target, &target_details);
+		Self::set_capacity_for(target, &capacity_details);
+
+		Ok(capacity)
+	}
+
+	/// Locks total staked & sets staking account details.
 	fn set_staking_account(staker: &T::AccountId, staking_account: &StakingAccountDetails<T>) {
+		// TODO: lock includes boost totals also
 		T::Currency::set_lock(STAKING_ID, &staker, staking_account.total, WithdrawReasons::all());
 		StakingAccountLedger::<T>::insert(staker, staking_account);
 	}
 
+	/// Locks total staked and sets boosting account details
+	fn set_boosting_account(staker: &T::AccountId, boosting_account: &BoostingAccountDetails<T>) {
+		// TODO: lock includes stake totals also
+		T::Currency::set_lock(
+			STAKING_ID,
+			staker,
+			boosting_account.staking_details.total,
+			WithdrawReasons::all(),
+		);
+		BoostingAccountLedger::<T>::insert(staker.clone(), boosting_account);
+	}
+
 	/// Deletes staking account details
 	fn delete_staking_account(staker: &T::AccountId) {
+		// TODO: do not remove this lock unless both types of staking account details are cleared.
+		// otherwise call set_lock for the new value containing only the other type of staking account.
 		T::Currency::remove_lock(STAKING_ID, &staker);
 		StakingAccountLedger::<T>::remove(&staker);
 	}
+
+	/// If the staking account total is zero we reap storage, otherwise set the account to the new details.
+	// TODO: do not remove this lock unless both types of staking account details are cleared.
+	// fn delete_boosting_account(staker: &T::AccountId) {
+	// 	// otherwise call set_lock for the new value containing only the other type of staking account.
+	// 	T::Currency::remove_lock(STAKING_ID, &staker);
+	// 	BoostingAccountLedger::<T>::remove(&staker);
+	// }
 
 	/// If the staking account total is zero we reap storage, otherwise set the account to the new details.
 	fn update_or_delete_staking_account(
@@ -686,12 +758,22 @@ impl<T: Config> Pallet<T> {
 			Self::set_staking_account(&staker, &staking_account)
 		}
 	}
+	// fn update_or_delete_boosting_account(
+	// 	staker: &T::AccountId,
+	// 	account_details: &BoostingAccountDetails<T>,
+	// ) {
+	// 	if account_details.staking_details.total.is_zero() {
+	// 		Self::delete_boosting_account(&staker);
+	// 	} else {
+	// 		Self::set_boosting_account(&staker, &account_details)
+	// 	}
+	// }
 
 	/// Sets target account details.
 	fn set_target_details_for(
 		staker: &T::AccountId,
 		target: &MessageSourceId,
-		target_details: &StakingTargetDetails<T>,
+		target_details: &StakingTargetDetails<BalanceOf<T>>,
 	) {
 		if target_details.amount.is_zero() {
 			StakingTargetLedger::<T>::remove(staker, target);
@@ -730,6 +812,7 @@ impl<T: Config> Pallet<T> {
 		current_epoch.saturating_add(thaw_period.into())
 	}
 
+	// TODO: alter for checking provider boost or make another function
 	fn ensure_can_unstake(unstaker: &T::AccountId) -> Result<(), DispatchError> {
 		let staking_account: StakingAccountDetails<T> =
 			Self::get_staking_account_for(unstaker).ok_or(Error::<T>::NotAStakingAccount)?;
@@ -771,8 +854,11 @@ impl<T: Config> Pallet<T> {
 			};
 		// this call will return an amount > than requested if the resulting StakingTargetDetails balance
 		// is below the minimum. This ensures we withdraw the same amounts as for staking_target_details.
-		let (actual_amount, actual_capacity) =
-			staking_target_details.withdraw(amount, capacity_to_withdraw);
+		let (actual_amount, actual_capacity) = staking_target_details.withdraw(
+			amount,
+			capacity_to_withdraw,
+			T::MinimumStakingAmount::get(),
+		);
 
 		capacity_details.withdraw(actual_capacity, actual_amount);
 
@@ -830,9 +916,9 @@ impl<T: Config> Pallet<T> {
 			let past_eras_max = T::StakingRewardsPastErasMax::get();
 			let entries: u32 = StakingRewardPool::<T>::count(); // 1r
 
-			if past_eras_max.eq(&entries.into()) {
+			if past_eras_max.eq(&entries) {
 				let earliest_era =
-					current_era_info.era_index.saturating_sub(past_eras_max).add(One::one());
+					current_era_info.era_index.saturating_sub(past_eras_max.into()).add(One::one());
 				StakingRewardPool::<T>::remove(earliest_era); // 1w
 			}
 			CurrentEraInfo::<T>::set(new_era_info); // 1w
@@ -856,24 +942,20 @@ impl<T: Config> Pallet<T> {
 
 	/// Returns whether `account_id` may claim and and be paid token rewards.
 	pub fn payout_eligible(account_id: T::AccountId) -> bool {
+		// TODO:  stake vs boost
 		let _staking_account =
 			Self::get_staking_account_for(account_id).ok_or(Error::<T>::NotAStakingAccount);
 		false
 	}
 
-	/// adds a new chunk to StakingAccountDetails.stake_change_unlocking.  The
-	/// call `update_stake_change_unlocking` garbage-collects thawed chunks before adding the new one.
-	fn add_change_staking_target_unlock_chunk(
-		staker: &T::AccountId,
-		amount: &BalanceOf<T>,
-	) -> Result<(), DispatchError> {
-		let mut staking_account_details: StakingAccountDetails<T> =
-			Self::get_staking_account_for(staker).ok_or(Error::<T>::NotAStakingAccount)?;
-
+	/// attempts to increment number of retargets this RewardEra
+	/// Returns:
+	///     Error::MaxRetargetsExceeded if they try to retarget too many times in one era.
+	fn update_retarget_record(staker: &T::AccountId) -> Result<(), DispatchError> {
 		let current_era: T::RewardEra = Self::get_current_era().era_index;
-		let thaw_at = current_era.saturating_add(T::ChangeStakingTargetThawEras::get());
-		staking_account_details.update_stake_change_unlocking(amount, &thaw_at, &current_era)?;
-		Self::set_staking_account(staker, &staking_account_details);
+		let mut retargets = Self::get_retargets_for(staker).unwrap_or_default();
+		ensure!(retargets.update(current_era).is_some(), Error::<T>::MaxRetargetsExceeded);
+		Retargets::<T>::set(staker, Some(retargets));
 		Ok(())
 	}
 
@@ -892,7 +974,7 @@ impl<T: Config> Pallet<T> {
 
 		if to_msa_target.amount.is_zero() {
 			// it's a new StakingTargetDetails record.
-			to_msa_target.staking_type = staking_type.clone();
+			to_msa_target.staking_type = *staking_type;
 		} else {
 			// make sure they are not retargeting to a StakingTargetDetails with a different staking
 			// type, otherwise it could interfere with staking rewards.
@@ -912,7 +994,7 @@ impl<T: Config> Pallet<T> {
 
 		Self::set_target_details_for(staker, to_msa, &to_msa_target);
 		Self::set_capacity_for(to_msa, &capacity_details);
-		Self::add_change_staking_target_unlock_chunk(staker, amount)
+		Ok(())
 	}
 }
 
@@ -1023,11 +1105,15 @@ impl<T: Config> StakingRewardsProvider<T> for Pallet<T> {
 		to_era: T::RewardEra,
 	) -> Result<BalanceOf<T>, DispatchError> {
 		let era_range = from_era.saturating_sub(to_era);
-		ensure!(era_range.le(&T::StakingRewardsPastErasMax::get()), Error::<T>::EraOutOfRange);
+		ensure!(
+			era_range.le(&T::StakingRewardsPastErasMax::get().into()),
+			Error::<T>::EraOutOfRange
+		);
 		ensure!(from_era.le(&to_era), Error::<T>::EraOutOfRange);
 		let current_era_info = Self::get_current_era();
 		ensure!(to_era.lt(&current_era_info.era_index), Error::<T>::EraOutOfRange);
 
+		// TODO: update when staking history is implemented
 		// For now rewards 1 unit per era for a valid range since there is no history storage
 		let per_era = BalanceOf::<T>::one();
 
