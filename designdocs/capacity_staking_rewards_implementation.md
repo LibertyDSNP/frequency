@@ -343,8 +343,8 @@ pub fn change_staking_target(
 );
 ```
 
-To track the retargets for each account, we add `Retargets` storage, and implement an update function whose return value can be evaluated to know if
-the retarget struct was updated or not, if it's at the maximum for the current RewardEra.
+To track the retargets for each account, we add `Retargets` storage, and implement an update function whose return value can be evaluated to know if  the retarget struct was updated or not, if it's at the maximum for the current RewardEra.
+The retarget count applies to both types of staking, so it's stored separately.
 ```rust
 	/// stores how many times an account has retargeted, and when it last retargeted.
 	#[pallet::storage]

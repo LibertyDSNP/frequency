@@ -278,11 +278,11 @@ describe("Capacity Staking Tests", function () {
 
         before(async function () {
             stakeKeys = createKeys("StakeKeysProvider");
-            stakeProviderId = await createMsaAndProvider(stakeKeys, "SPBoost", accountBalance);
+``            stakeProviderId = await createMsaAndProvider(fundingSource, stakeKeys, "SPBoost", accountBalance);
         });
 
         it('works, happy path', async () => {
-            await assert.doesNotReject(boostProvider(stakeKeys, stakeProviderId, tokenMinStake));
+            await assert.doesNotReject(boostProvider(fundingSource, stakeKeys, stakeProviderId, tokenMinStake));
 
             // Confirm that the tokens were locked in the stakeKeys account using the query API
             const stakedAcctInfo = await ExtrinsicHelper.getAccountInfo(stakeKeys.address);
