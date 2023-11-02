@@ -48,10 +48,19 @@ It does not give regard to what the economic model actually is, since that is ye
 1. **Reward Pool**: a fixed amount of FRQCY that can be minted for rewards each RewardEra and distributed to stakers.
 1. **StakingRewardsProvider**: a trait that encapsulates the economic model for staking rewards, providing functionality for calculating the reward pool and staking rewards.
 
-## Staking Token Rewards
+### StakingAccountDetails updates
+This will be a V2 of this storage and original StakingAccountDetails will need to be migrated.
+Because Stake unlocking will be stored separately, StakingAccountDetails will store _only_ an active staking amount, plus a staking type.
 
-**Unstaking thaw period**
-Changes the thaw period to begin at the first block of next RewardEra instead of immediately.
+```rust
+pub struct StakingAccountDetailsV2<T: Config> {
+    pub active: BalanceOf<T>,
+    // pub total: BalanceOf<T>,  REMOVED
+    // pub unlocking: BoundedVec<UnlockChunk<BalanceOf<T>, T::EpochNumber>, T::MaxUnlockingChunks>, REMOVED
+    /// What type of staking this account is doing
+    pub staking_type: StakingType, // NEW
+}
+```
 
 ### Changes to extrinsics
 #### stake
@@ -61,6 +70,9 @@ However, if one calls `stake` with a `target` that `origin` already has a staker
 it is _not_ a `MaximumCapacity` staking type, it will error with `Error::CannotChangeStakingType`. 
 
 #### unstake
+**Unstaking thaw period**
+Changes the thaw period to begin at the first block of next RewardEra instead of immediately.
+
 The unstake parameters are the same, and unstake behavior is the same for `MaximumCapacity` as before, however 
 for a `ProviderBoost` staker-target relationship, the behavior must be different.  While it's not feasible to
 store either `reward_pool` history or individual staking reward history indefinitely, it still may be lengthy
@@ -106,8 +118,6 @@ pub struct StakingRewardClaim<T: Config> {
     pub claimed_reward: Balance,
     /// The end state of the staking account if the operations are valid
     pub staking_account_end_state: StakingAccountDetails,
-    /// The starting era for the claimed reward period, inclusive
-    pub from_era: T::RewardEra,
     /// The ending era for the claimed reward period, inclusive
     pub to_era: T::RewardEra,
 }
@@ -156,30 +166,40 @@ pub trait Config: frame_system::Config {
 };
 ```
 
-### NEW: BoostingAccountDetails
-This stores information about a ProviderBoost type of staking account. It is significantly different enough in structure and needs enough different treatment and behavior to warrant its own separate storage.
+### NEW: BoostStakingDetails
+This stores information specific to ProviderBoosting, which would be needed to calculate rewards, 
+for a staking account. 
+
 ```rust
-pub struct BoostingAccountDetails<T: Config> {
-	/// The staking account details for this boosting account
-	pub staking_details: StakingAccountDetails<T>,
-	/// The reward era that rewards were last claimed for this account
-	pub last_rewards_claimed_at: Option<T::RewardEra>,
-	/// Provider Boost Staking amounts for eras up to StakingRewardsPastErasMax
-	/// Note that this is updated only on a stake change.
-	pub boost_history:
-		BoundedVec<StakingHistory<BalanceOf<T>, T::RewardEra>, T::StakingRewardsPastErasMax>,
+pub struct BoostStakingDetails<T: Config> {
+    /// The reward era that rewards were last claimed for this account
+    pub last_rewards_claimed_at: Option<T::RewardEra>,
+    /// Provider Boost Staking amounts for eras up to StakingRewardsPastErasMax
+    /// Note that this is updated only on a stake change.
+    pub staking_history:
+    BoundedVec<StakingHistory<BalanceOf<T>, T::RewardEra>, T::StakingRewardsPastErasMax>,
 }
 ```
 
-### NEW: BoostingAccountLedger
-We store the ledger of ProviderBoost staking separately from MaximizedCapacity staking, which still lives in StakingAccountLedger.
+### NEW: BoostStakingLedger storage
+The ledger of ProviderBoost staking  will be stored separately from MaximizedCapacity staking, which still lives in StakingAccountLedger.
 ```rust
 /// Ledger of accounts that have staked for provider boosting
 #[pallet::storage]
 #[pallet::getter(fn get_boost_details_for)]
-pub type BoostingAccountLedger<T: Config> =
-StorageMap<_, Twox64Concat, T::AccountId, BoostingAccountDetails<T>>;
+pub type BoostStakingLedger<T: Config> =
+StorageMap<_, Twox64Concat, T::AccountId, BoostStakingDetails<T>>;
 ```
+
+### NEW: StakingUnlockChunks
+The ledger of thawing amounts created by unstake calls will be moved to their own storage, with the AccountId as the key.
+
+As with standard Polkadot staking, there is a thaw period for unstaking token amounts.  The number of unstakes within a given period is limited.  In this case the limit is measured in Epochs. Previously, unlocks were tracked within the StakingAccountDetails, requiring that struct to track the difference between active and total, when the total includes what is currently thawing.  However, withdrawals happen immediately and affect only the active amount, which in turn affects Capacity. The thawing amounts affect only the staker's locked token. 
+
+The advantages of separating the unlock storage are:
+* Less database lift for staking since the struct is much smaller
+* Separation of concerns:  StakingAccountDetails need not require access to System accounts.
+* Less database lift for withdrawing thawed token: it will never need to access a StakingAccount because the amount has already been withdrawn.  The only thing that needs to happen is to remove the thawed chunks from unlocking, and unlock the thawed total for the System account.
 
 ### NEW: RewardPoolInfo, RewardPoolHistory
 Information about the reward pool for a given Reward Era and how it's stored. The size of this pool is limited to
