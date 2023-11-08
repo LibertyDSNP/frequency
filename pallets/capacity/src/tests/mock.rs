@@ -1,7 +1,8 @@
 use crate as pallet_capacity;
 
+use crate::{BalanceOf, StakingRewardClaim, StakingRewardsProvider};
 use common_primitives::{
-	node::{AccountId, ProposalProvider},
+	node::{AccountId, Hash, Header, ProposalProvider},
 	schema::{SchemaId, SchemaValidator},
 };
 use frame_support::{
@@ -14,6 +15,7 @@ use sp_runtime::{
 	traits::{BlakeTwo256, Convert, IdentityLookup},
 	AccountId32, BuildStorage, DispatchError, Perbill,
 };
+use sp_std::ops::{Div, Mul};
 
 type Block = frame_system::mocking::MockBlockU32<Test>;
 
@@ -128,6 +130,45 @@ impl pallet_msa::Config for Test {
 	type MaxSignaturesStored = ConstU32<8000>;
 }
 
+// not used yet
+pub struct TestStakingRewardsProvider {}
+
+type TestRewardEra = u32;
+
+impl StakingRewardsProvider<Test> for TestStakingRewardsProvider {
+	type AccountId = u64;
+	type RewardEra = TestRewardEra;
+	type Hash = Hash; // use what's in common_primitives::node
+
+	fn reward_pool_size(total_staked: BalanceOf<Test>) -> BalanceOf<Test> {
+		total_staked.div(10u64)
+	}
+
+	fn staking_reward_total(
+		account_id: Self::AccountId,
+		_from_era: Self::RewardEra,
+		_to_era: Self::RewardEra,
+	) -> Result<BalanceOf<Test>, DispatchError> {
+		if account_id > 2u64 {
+			Ok(10u64)
+		} else {
+			Ok(1u64)
+		}
+	}
+
+	fn validate_staking_reward_claim(
+		_account_id: Self::AccountId,
+		_proof: Self::Hash,
+		_payload: StakingRewardClaim<Test>,
+	) -> bool {
+		true
+	}
+
+	fn capacity_boost(amount: BalanceOf<Test>) -> BalanceOf<Test> {
+		Perbill::from_percent(5u32).mul(amount)
+	}
+}
+
 // Needs parameter_types! for the Perbill
 parameter_types! {
 	pub const TestCapacityPerToken: Perbill = Perbill::from_percent(10);
@@ -149,6 +190,11 @@ impl pallet_capacity::Config for Test {
 	type MaxEpochLength = ConstU32<100>;
 	type EpochNumber = u32;
 	type CapacityPerToken = TestCapacityPerToken;
+	type RewardEra = TestRewardEra;
+	type EraLength = ConstU32<10>;
+	type StakingRewardsPastErasMax = ConstU32<5>;
+	type RewardsProvider = TestStakingRewardsProvider;
+	type MaxRetargetsPerRewardEra = ConstU32<5>;
 }
 
 pub fn new_test_ext() -> sp_io::TestExternalities {

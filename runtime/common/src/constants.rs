@@ -382,5 +382,4 @@ parameter_types! {
 	//  ```error[E0015]: cannot call non-const fn `Perbill::from_rational::<u32>` in constant functions```
 	pub const CapacityPerToken: Perbill = Perbill::from_percent(2);
 }
-
 // -end- Capacity Pallet ---

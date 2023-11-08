@@ -48,55 +48,19 @@ It does not give regard to what the economic model actually is, since that is ye
 1. **Reward Pool**: a fixed amount of FRQCY that can be minted for rewards each RewardEra and distributed to stakers.
 1. **StakingRewardsProvider**: a trait that encapsulates the economic model for staking rewards, providing functionality for calculating the reward pool and staking rewards.
 
-## Staking Token Rewards
-
 ### StakingAccountDetails updates
-New fields are added. The field **`last_rewarded_at`** is to keep track of the last time rewards were claimed for this Staking Account.
-MaximumCapacity staking accounts MUST always have the value `None` for `last_rewarded_at`. 
-Finally, `stake_change_unlocking`, is added, which stores an `UnlockChunk` when a staking account has changed.
-targets for some amount of funds.  This is to prevent retarget spamming.
-
 This will be a V2 of this storage and original StakingAccountDetails will need to be migrated.
+Because Stake unlocking will be stored separately, StakingAccountDetails will store _only_ an active staking amount, plus a staking type.
+
 ```rust
 pub struct StakingAccountDetailsV2<T: Config> {
     pub active: BalanceOf<T>,
-    pub total: BalanceOf<T>,
-    pub unlocking: BoundedVec<UnlockChunk<BalanceOf<T>, T::EpochNumber>, T::MaxUnlockingChunks>,
-    /// The number of the last StakingEra that this account's rewards were claimed.
-    pub last_rewards_claimed_at: Option<T::RewardEra>, // NEW  None means never rewarded, Some(RewardEra) means last rewarded RewardEra.
-    /// staking amounts that have been retargeted are prevented from being retargeted again for the
-    /// configured Thawing Period number of blocks.
-    pub stake_change_unlocking: BoundedVec<UnlockChunk<BalanceOf<T>, T::RewardEra>, T::MaxUnlockingChunks>, // NEW
+    // pub total: BalanceOf<T>,  REMOVED
+    // pub unlocking: BoundedVec<UnlockChunk<BalanceOf<T>, T::EpochNumber>, T::MaxUnlockingChunks>, REMOVED
+    /// What type of staking this account is doing
+    pub staking_type: StakingType, // NEW
 }
 ```
-
-### StakingTargetDetails updates, StakingHistory
-A new field, `staking_type` is added to indicate the type of staking the Account holder is doing in relation to this target.
-Staking type may be `MaximumCapacity` or `ProviderBoost`. `MaximumCapacity` is the default value for `staking_type` and maps to 0.
-
-```rust
-/// A per-reward-era record for StakingAccount total_staked amount.
-pub struct StakingHistory<Balance, RewardEra> { // NEW
-    total_staked: Balance,
-    reward_era: RewardEra,
-}
-
-#[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen)]
-#[scale_info(skip_type_params(T))]
-pub struct StakingTargetDetails<T: Config> {
-	/// The total amount of tokens that have been targeted to the MSA.
-	pub amount: BalanceOf<T>,
-	/// The total Capacity that an MSA received.
-	pub capacity: BalanceOf<T>,
-	/// The type of staking, which determines ultimate capacity per staked token.
-	pub staking_type: StakingType, // NEW
-    /// total staked amounts for each past era, up to StakingRewardsPastErasMax eras.
-    pub staking_history: BoundedVec<StakingHistory<BalanceOf<T>, T::RewardEra>, T::StakingRewardsPastErasMax>, // NEW
-}
-```
-
-**Unstaking thaw period**
-Changes the thaw period to begin at the first block of next RewardEra instead of immediately.
 
 ### Changes to extrinsics
 #### stake
@@ -106,6 +70,9 @@ However, if one calls `stake` with a `target` that `origin` already has a staker
 it is _not_ a `MaximumCapacity` staking type, it will error with `Error::CannotChangeStakingType`. 
 
 #### unstake
+**Unstaking thaw period**
+Changes the thaw period to begin at the first block of next RewardEra instead of immediately.
+
 The unstake parameters are the same, and unstake behavior is the same for `MaximumCapacity` as before, however 
 for a `ProviderBoost` staker-target relationship, the behavior must be different.  While it's not feasible to
 store either `reward_pool` history or individual staking reward history indefinitely, it still may be lengthy
@@ -151,8 +118,6 @@ pub struct StakingRewardClaim<T: Config> {
     pub claimed_reward: Balance,
     /// The end state of the staking account if the operations are valid
     pub staking_account_end_state: StakingAccountDetails,
-    /// The starting era for the claimed reward period, inclusive
-    pub from_era: T::RewardEra,
     /// The ending era for the claimed reward period, inclusive
     pub to_era: T::RewardEra,
 }
@@ -201,6 +166,41 @@ pub trait Config: frame_system::Config {
 };
 ```
 
+### NEW: BoostStakingDetails
+This stores information specific to ProviderBoosting, which would be needed to calculate rewards, 
+for a staking account. 
+
+```rust
+pub struct BoostStakingDetails<T: Config> {
+    /// The reward era that rewards were last claimed for this account
+    pub last_rewards_claimed_at: Option<T::RewardEra>,
+    /// Provider Boost Staking amounts for eras up to StakingRewardsPastErasMax
+    /// Note that this is updated only on a stake change.
+    pub staking_history:
+    BoundedVec<StakingHistory<BalanceOf<T>, T::RewardEra>, T::StakingRewardsPastErasMax>,
+}
+```
+
+### NEW: BoostStakingLedger storage
+The ledger of ProviderBoost staking  will be stored separately from MaximizedCapacity staking, which still lives in StakingAccountLedger.
+```rust
+/// Ledger of accounts that have staked for provider boosting
+#[pallet::storage]
+#[pallet::getter(fn get_boost_details_for)]
+pub type BoostStakingLedger<T: Config> =
+StorageMap<_, Twox64Concat, T::AccountId, BoostStakingDetails<T>>;
+```
+
+### NEW: StakingUnlockChunks
+The ledger of thawing amounts created by unstake calls will be moved to their own storage, with the AccountId as the key.
+
+As with standard Polkadot staking, there is a thaw period for unstaking token amounts.  The number of unstakes within a given period is limited.  In this case the limit is measured in Epochs. Previously, unlocks were tracked within the StakingAccountDetails, requiring that struct to track the difference between active and total, when the total includes what is currently thawing.  However, withdrawals happen immediately and affect only the active amount, which in turn affects Capacity. The thawing amounts affect only the staker's locked token. 
+
+The advantages of separating the unlock storage are:
+* Less database lift for staking since the struct is much smaller
+* Separation of concerns:  StakingAccountDetails need not require access to System accounts.
+* Less database lift for withdrawing thawed token: it will never need to access a StakingAccount because the amount has already been withdrawn.  The only thing that needs to happen is to remove the thawed chunks from unlocking, and unlock the thawed total for the System account.
+
 ### NEW: RewardPoolInfo, RewardPoolHistory
 Information about the reward pool for a given Reward Era and how it's stored. The size of this pool is limited to
 `StakingRewardsPastErasMax` but is stored as a CountedStorageMap instead of a BoundedVec for performance reasons:
@@ -244,7 +244,6 @@ pub struct RewardEraInfo<RewardEra, BlockNumber> {
 ```rust
 pub enum Error<T> {
     /// ...
-    /// Staker tried to change StakingType on an existing account
     CannotChangeStakingType,
     /// The Era specified is too far in the past or is in the future
     EraOutOfRange,
@@ -254,6 +253,10 @@ pub enum Error<T> {
     CannotRetargetToSameProvider,
     /// Rewards were already paid out this era
     AlreadyClaimedRewardsThisEra,
+    /// Caller must wait until the next RewardEra, claim rewards and then can boost again.
+    MustFirstClaimRewards,
+    /// Too many change_staking_target calls made in this RewardEra.
+    MaxRetargetsExceeded,
 }
 ```
 
@@ -332,8 +335,9 @@ This could be the form if calculations are done off chain and submitted for vali
 #### 3. change_staking_target(origin, from, to, amount)
 Changes a staking account detail's target MSA Id to a new one by `amount`
 Rules for this are similar to unstaking; if `amount` would leave less than the minimum staking  amount for the `from` target, the entire amount is retargeted.
-No more than `T::MaxUnlockingChunks` staking amounts may be retargeted within this Thawing Period.
-Each call creates one chunk.  Emits a `StakingTargetChanged` event with the parameters of the extrinsic.
+Emits a `StakingTargetChanged` event with the parameters of the extrinsic.
+To prevent spam, we limit the number of times an account can retarget.
+
 ```rust
 /// Sets the target of the staking capacity to a new target.
 /// This adds a chunk to `StakingAccountDetails.stake_change_unlocking chunks`, up to `T::MaxUnlockingChunks`.
@@ -349,6 +353,7 @@ Each call creates one chunk.  Emits a `StakingTargetChanged` event with the para
 /// - [`Error::InsufficientStakingBalance`] if `amount` to retarget exceeds what the staker has targeted to `from` MSA Id.
 /// - [`Error::InvalidTarget`] if `to` does not belong to a registered Provider.
 /// - [`Error::CannotChangeStakingType`] if origin already has funds staked for `to` and the staking type for `from` is different.
+/// - [`Error::MaxRetargetsExceeded`] if origin has reached the maximimum number of retargets for the current RewardEra.
 #[pallet:call_index(n+1)] // n = current call index in the pallet
 pub fn change_staking_target(
     origin: OriginFor<T>,
@@ -356,6 +361,15 @@ pub fn change_staking_target(
     to: MessageSourceId,
     amount: BalanceOf<T>
 );
+```
+
+To track the retargets for each account, we add `Retargets` storage, and implement an update function whose return value can be evaluated to know if  the retarget struct was updated or not, if it's at the maximum for the current RewardEra.
+The retarget count applies to both types of staking, so it's stored separately.
+```rust
+	/// stores how many times an account has retargeted, and when it last retargeted.
+	#[pallet::storage]
+	#[pallet::getter(fn get_retargets_for)]
+	pub type Retargets<T: Config> = StorageMap<_, Twox64Concat, T::AccountId, RetargetInfo<T>>;
 ```
 
 ### NEW:  Capacity pallet helper function

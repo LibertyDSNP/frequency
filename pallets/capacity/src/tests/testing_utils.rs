@@ -1,6 +1,7 @@
 use super::mock::*;
 use frame_support::{assert_ok, traits::Hooks};
 
+use common_primitives::capacity::{StakingType, StakingType::MaximumCapacity};
 #[allow(unused)]
 use sp_runtime::traits::SignedExtension;
 
@@ -28,6 +29,7 @@ pub fn run_to_block(n: u32) {
 		Capacity::on_initialize(System::block_number());
 	}
 }
+
 // Remove capacity on_initialize, needed to emulate pre-existing block height
 pub fn system_run_to_block(n: u32) {
 	while System::block_number() < n {
@@ -59,7 +61,31 @@ pub fn create_capacity_account_and_fund(
 	capacity_details.total_capacity_issued = available;
 	capacity_details.last_replenished_epoch = last_replenished;
 
-	Capacity::set_capacity_for(target_msa_id, capacity_details.clone());
+	Capacity::set_capacity_for(&target_msa_id, &capacity_details);
 
 	capacity_details
+}
+
+pub fn setup_provider(
+	staker: &u64,
+	target: &MessageSourceId,
+	amount: &u64,
+	staking_type: StakingType,
+) {
+	let provider_name = String::from("Cst-") + target.to_string().as_str();
+	register_provider(*target, provider_name);
+	if amount.gt(&0u64) {
+		if staking_type == MaximumCapacity {
+			assert_ok!(Capacity::stake(RuntimeOrigin::signed(staker.clone()), *target, *amount,));
+		} else {
+			assert_ok!(Capacity::provider_boost(
+				RuntimeOrigin::signed(staker.clone()),
+				*target,
+				*amount
+			));
+		}
+		let target = Capacity::get_target_for(staker, target).unwrap();
+		assert_eq!(target.amount, *amount);
+		assert_eq!(target.staking_type, staking_type);
+	}
 }

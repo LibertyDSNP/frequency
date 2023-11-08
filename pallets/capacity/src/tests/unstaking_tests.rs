@@ -1,7 +1,9 @@
 use super::{mock::*, testing_utils::*};
 use crate as pallet_capacity;
-use crate::{CapacityDetails, StakingAccountDetails, StakingTargetDetails, UnlockChunk};
-use common_primitives::msa::MessageSourceId;
+use crate::{
+	CapacityDetails, RewardPoolInfo, StakingAccountDetails, StakingTargetDetails, UnlockChunk,
+};
+use common_primitives::{capacity::StakingType, msa::MessageSourceId};
 use frame_support::{assert_noop, assert_ok, traits::Get};
 use pallet_capacity::{BalanceOf, Config, Error, Event};
 use sp_core::bounded::BoundedVec;
@@ -9,6 +11,7 @@ use sp_core::bounded::BoundedVec;
 #[test]
 fn unstake_happy_path() {
 	new_test_ext().execute_with(|| {
+		// TODO: ProviderBoost after unstake affects reward pool info #1699
 		let token_account = 200;
 		let target: MessageSourceId = 1;
 		let staking_amount = 100;
@@ -16,7 +19,7 @@ fn unstake_happy_path() {
 
 		register_provider(target, String::from("Test Target"));
 
-		assert_ok!(Capacity::stake(RuntimeOrigin::signed(token_account), target, staking_amount));
+		assert_ok!(Capacity::stake(RuntimeOrigin::signed(token_account), target, staking_amount,));
 		assert_ok!(Capacity::unstake(
 			RuntimeOrigin::signed(token_account),
 			target,
@@ -48,8 +51,9 @@ fn unstake_happy_path() {
 		assert_eq!(
 			staking_target_details,
 			StakingTargetDetails::<BalanceOf<Test>> {
-				amount: BalanceOf::<Test>::from(60u64),
+				amount: 60u64,
 				capacity: BalanceOf::<Test>::from(6u64),
+				staking_type: StakingType::MaximumCapacity,
 			}
 		);
 
@@ -89,7 +93,7 @@ fn unstake_errors_unstaking_amount_is_zero() {
 
 		register_provider(target, String::from("Test Target"));
 
-		assert_ok!(Capacity::stake(RuntimeOrigin::signed(token_account), target, staking_amount));
+		assert_ok!(Capacity::stake(RuntimeOrigin::signed(token_account), target, staking_amount,));
 		assert_noop!(
 			Capacity::unstake(RuntimeOrigin::signed(token_account), target, unstaking_amount),
 			Error::<Test>::UnstakedAmountIsZero
@@ -107,7 +111,7 @@ fn unstake_errors_max_unlocking_chunks_exceeded() {
 
 		register_provider(target, String::from("Test Target"));
 
-		assert_ok!(Capacity::stake(RuntimeOrigin::signed(token_account), target, staking_amount));
+		assert_ok!(Capacity::stake(RuntimeOrigin::signed(token_account), target, staking_amount,));
 
 		for _n in 0..<Test as pallet_capacity::Config>::MaxUnlockingChunks::get() {
 			assert_ok!(Capacity::unstake(
@@ -134,10 +138,10 @@ fn unstake_errors_amount_to_unstake_exceeds_amount_staked() {
 
 		register_provider(target, String::from("Test Target"));
 
-		assert_ok!(Capacity::stake(RuntimeOrigin::signed(token_account), target, staking_amount));
+		assert_ok!(Capacity::stake(RuntimeOrigin::signed(token_account), target, staking_amount,));
 		assert_noop!(
 			Capacity::unstake(RuntimeOrigin::signed(token_account), target, unstaking_amount),
-			Error::<Test>::AmountToUnstakeExceedsAmountStaked
+			Error::<Test>::InsufficientStakingBalance
 		);
 	});
 }
@@ -156,5 +160,42 @@ fn unstake_errors_not_a_staking_account() {
 			Capacity::unstake(RuntimeOrigin::signed(token_account), target, unstaking_amount),
 			Error::<Test>::NotAStakingAccount
 		);
+	});
+}
+
+// TODO: when resuming reward pool branch
+// #[test]
+fn unstake_provider_boosted_target_adjusts_reward_pool_total() {
+	new_test_ext().execute_with(|| {
+		// two accounts staking to the same target
+		let account1 = 600;
+		let account2 = 500;
+		let target: MessageSourceId = 1;
+		let amount1 = 500;
+		let amount2 = 200;
+		register_provider(target, String::from("Foo"));
+
+		assert_ok!(Capacity::provider_boost(RuntimeOrigin::signed(account1), target, amount1));
+		assert_ok!(Capacity::provider_boost(RuntimeOrigin::signed(account2), target, amount2));
+
+		let reward_pool = Capacity::get_reward_pool_for_era(0).unwrap();
+		assert_eq!(
+			reward_pool,
+			RewardPoolInfo {
+				total_staked_token: 700,
+				total_reward_pool: 70,
+				unclaimed_balance: 70,
+			}
+		);
+
+		system_run_to_block(2);
+	});
+}
+
+// TODO: when resuming reward pool branch
+// #[test]
+fn unstake_provider_boosted_target_updates_staking_account_history() {
+	new_test_ext().execute_with(|| {
+		assert!(false);
 	});
 }

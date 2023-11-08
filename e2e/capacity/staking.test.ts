@@ -7,7 +7,7 @@ import {
     createKeys, createMsaAndProvider,
     stakeToProvider,
     getNextEpochBlock, TEST_EPOCH_LENGTH,
-    CENTS, DOLLARS, createAndFundKeypair, getCapacity, createMsa
+    CENTS, DOLLARS, createAndFundKeypair, boostProvider,
 } from "../scaffolding/helpers";
 import { isDev } from "../scaffolding/env";
 import { getFundingSource } from "../scaffolding/funding";
@@ -198,13 +198,13 @@ describe("Capacity Staking Tests", function () {
     });
 
     describe("when attempting to stake below the minimum staking requirements", async function () {
-        it("should fail to stake for InsufficientStakingAmount", async function () {
+        it("should fail to stake for StakingAmountBelowMinimum", async function () {
             let stakingKeys = createKeys("stakingKeys");
             let providerId = await createMsaAndProvider(fundingSource, stakingKeys, "stakingKeys", 150n * CENTS);
             let stakeAmount = 1500n;
 
             const failStakeObj = ExtrinsicHelper.stake(stakingKeys, providerId, stakeAmount);
-            await assert.rejects(failStakeObj.signAndSend(), { name: "InsufficientStakingAmount" });
+            await assert.rejects(failStakeObj.signAndSend(), { name: "StakingAmountBelowMinimum" });
         });
     });
 
@@ -214,7 +214,7 @@ describe("Capacity Staking Tests", function () {
             let providerId = await createMsaAndProvider(fundingSource, stakingKeys, "stakingKeys", 10n * CENTS);
 
             const failStakeObj = ExtrinsicHelper.stake(stakingKeys, providerId, 0);
-            await assert.rejects(failStakeObj.signAndSend(), { name: "ZeroAmountNotAllowed" });
+            await assert.rejects(failStakeObj.signAndSend(), { name: "StakingAmountBelowMinimum" });
         });
     });
 
@@ -270,4 +270,30 @@ describe("Capacity Staking Tests", function () {
             });
         })
     });
+
+    describe('provider_boost()', async () => {
+        let stakeKeys: KeyringPair;
+        let stakeProviderId: u64;
+        let capacityBoostMin: bigint = capacityMin/ 20n; // 5% of the amount
+
+        before(async function () {
+            stakeKeys = createKeys("StakeKeysProvider");
+``            stakeProviderId = await createMsaAndProvider(fundingSource, stakeKeys, "SPBoost", accountBalance);
+        });
+
+        it('works, happy path', async () => {
+            await assert.doesNotReject(boostProvider(fundingSource, stakeKeys, stakeProviderId, tokenMinStake));
+
+            // Confirm that the tokens were locked in the stakeKeys account using the query API
+            const stakedAcctInfo = await ExtrinsicHelper.getAccountInfo(stakeKeys.address);
+            assert.equal(stakedAcctInfo.data.frozen, tokenMinStake, `expected ${tokenMinStake} frozen balance, got ${stakedAcctInfo.data.frozen}`)
+
+            // Confirm that the capacity was added to the stakeProviderId using the query API
+            const capacityStaked = (await firstValueFrom(ExtrinsicHelper.api.query.capacity.capacityLedger(stakeProviderId))).unwrap();
+            assert.equal(capacityStaked.remainingCapacity, capacityBoostMin, `expected capacityLedger.remainingCapacity = 1CENT, got ${capacityStaked.remainingCapacity}`);
+            assert.equal(capacityStaked.totalTokensStaked, tokenMinStake, `expected capacityLedger.totalTokensStaked = 1CENT, got ${capacityStaked.totalTokensStaked}`);
+            assert.equal(capacityStaked.totalCapacityIssued, capacityBoostMin, `expected capacityLedger.totalCapacityIssued = 1CENT, got ${capacityStaked.totalCapacityIssued}`);
+            trackedFrozenBalance += tokenMinStake;
+        })
+    })
 })

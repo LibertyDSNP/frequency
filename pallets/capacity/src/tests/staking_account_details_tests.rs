@@ -1,6 +1,7 @@
 use super::mock::*;
 use crate::*;
-use frame_support::assert_err;
+use common_primitives::node::{BlockNumber, RewardEra};
+use frame_support::{assert_err, assert_ok, traits::Get};
 use sp_core::bounded::BoundedVec;
 
 type UnlockBVec<T> = BoundedVec<

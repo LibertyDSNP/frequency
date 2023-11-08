@@ -216,6 +216,11 @@ impl pallet_capacity::Config for Test {
 	type MaxEpochLength = ConstU32<100>;
 	type EpochNumber = u32;
 	type CapacityPerToken = TestCapacityPerToken;
+	type RewardEra = u32;
+	type EraLength = ConstU32<5>;
+	type StakingRewardsPastErasMax = ConstU32<2>;
+	type RewardsProvider = Capacity;
+	type MaxRetargetsPerRewardEra = ConstU32<5>;
 }
 
 use pallet_balances::Call as BalancesCall;
@@ -356,5 +361,5 @@ fn create_capacity_for(target: MessageSourceId, amount: u64) {
 	let mut capacity_details = Capacity::get_capacity_for(target).unwrap_or_default();
 	let capacity: u64 = amount / (TEST_TOKEN_PER_CAPACITY as u64);
 	capacity_details.deposit(&amount, &capacity).unwrap();
-	Capacity::set_capacity_for(target, capacity_details);
+	Capacity::set_capacity_for(&target, &capacity_details);
 }
