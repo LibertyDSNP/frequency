@@ -154,7 +154,7 @@ jobs:
       fail-fast: true
       matrix:
         # os: [[ubicloud, Linux, X64, build, v2], [ubicloud, Linux, ARM64,  build, v2]]
-        os: [ubicloud]
+        os: [ubicloud-standard-4]
         network: [dev, local, rococo, mainnet]
         include:
           - network: dev
@@ -173,7 +173,7 @@ jobs:
             spec: frequency
             build-profile: release
             release-file-name-prefix: frequency
-          - os: [ubicloud, Linux, X64, build, v2]
+          - os: ubicloud-standard-4
             arch: amd64
           # - os: [ubicloud, Linux, ARM64]
           #   arch: arm64
@@ -322,7 +322,7 @@ jobs:
           cargo install --locked --git https://github.com/chevdor/srtool-cli
           srtool --version
       - name: Sudo permission on /build
-        run: sudo chown -R $USER /build
+        run: sudo mkdir -p /build && sudo chown -R $USER /build
       - name: Build Deterministic WASM
         run: |
           RUST_LOG=debug SRTOOL_TAG="1.70.0" srtool build \
