@@ -153,8 +153,8 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        # os: [[self-hosted, Linux, X64, build, v2], [self-hosted, Linux, ARM64,  build, v2]]
-        os: [[self-hosted, Linux, X64, build, v2]]
+        # os: [[ubicloud, Linux, X64, build, v2], [ubicloud, Linux, ARM64,  build, v2]]
+        os: [ubicloud-standard-4]
         network: [dev, local, rococo, mainnet]
         include:
           - network: dev
@@ -173,9 +173,9 @@ jobs:
             spec: frequency
             build-profile: release
             release-file-name-prefix: frequency
-          - os: [self-hosted, Linux, X64, build, v2]
+          - os: ubicloud-standard-4
             arch: amd64
-          # - os: [self-hosted, Linux, ARM64]
+          # - os: [ubicloud, Linux, ARM64]
           #   arch: arm64
     runs-on: ${{matrix.os}}
     container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
@@ -284,7 +284,7 @@ jobs:
             release-wasm-file-name-prefix: frequency_runtime
             features: frequency
             wasm-core-version: frequency
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     steps:
       - name: Install Required Packages
         run: |
@@ -326,7 +326,8 @@ jobs:
           RUST_LOG=debug SRTOOL_TAG="1.70.0" srtool build \
             --build-opts="'--features on-chain-release-build,no-metadata-docs,${{matrix.features}}'" \
             --profile=${{matrix.build-profile}} \
-            --package=${{matrix.package}}
+            --package=${{matrix.package}} \
+            --root
       - name: Rename WASM file
         run: |
           cp -p ./${{env.WASM_DIR}}/${{env.BUILT_WASM_FILENAME}} \
@@ -350,7 +351,7 @@ jobs:
   build-rust-developer-docs:
     needs: version-code
     name: Build Rust Developer Docs
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
     steps:
       - name: Check Out Repo
@@ -1048,4 +1049,3 @@ jobs:
         working-directory: ./js/api-augment/dist
         env:
           NODE_AUTH_TOKEN: ${{secrets.NODE_AUTH_TOKEN}}
-

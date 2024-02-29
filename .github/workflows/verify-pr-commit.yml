@@ -131,7 +131,7 @@ jobs:
           - network: mainnet
             spec: frequency
             branch_alias: pr
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
     env:
       NETWORK: mainnet
@@ -206,7 +206,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     name: Lint Rust Code
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
     steps:
       - name: Check Out Repo
@@ -222,7 +222,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     name: Verify Rust Developer Docs
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
     steps:
       - name: Check Out Repo
@@ -236,7 +236,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     name: Verify Rust Packages and Dependencies
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
     steps:
       - name: Check Out Repo
@@ -248,7 +248,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     name: Run Rust Tests
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
     steps:
       - name: Check Out Repo
@@ -263,7 +263,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     name: Calculate Code Coverage
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-8
     container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
     steps:
       - name: Check Out Repo
@@ -320,7 +320,7 @@ jobs:
             built-wasm-file-name-prefix: frequency_runtime
             features: frequency
             wasm-core-version: frequency
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     steps:
       - name: Install Required Packages
         run: |
@@ -371,7 +371,8 @@ jobs:
           RUST_LOG=debug SRTOOL_TAG="1.70.0" srtool build \
             --build-opts="'--features on-chain-release-build,no-metadata-docs,${{matrix.features}}'" \
             --profile=${{matrix.build-profile}} \
-            --package=${{matrix.package}}
+            --package=${{matrix.package}} \
+            --root
       - name: Check Deterministic WASM Build Exists
         if: steps.cache-wasm.outputs.cache-hit != 'true'
         run: file ${{env.WASM_DIR}}/${{env.BUILT_WASM_FILENAME}}
@@ -643,7 +644,7 @@ jobs:
     if: needs.changes.outputs.run-e2e == 'true'
     needs: [build-binaries, verify-js-api-augment]
     name: Run E2E Tests
-    runs-on: [self-hosted, Linux, X64, build, v2]
+    runs-on: ubicloud-standard-4
     steps:
       - name: Check Out Repo
         uses: actions/checkout@v4
