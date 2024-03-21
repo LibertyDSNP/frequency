@@ -106,6 +106,75 @@ jobs:
     steps:
       - run: echo "Just a dummy matrix to satisfy GitHub required checks that were skipped"
 
+  cross-build:
+    # needs: changes
+    # if: needs.changes.outputs.rust == 'true'
+    name: ${{ matrix.platform.os_name }} with rust ${{ matrix.toolchain }}
+    runs-on: [self-hosted, Linux, X64, build, v2]
+    container: ghcr.io/libertydsnp/frequency/ci-base-image:latest
+    env:
+      CROSS_CONTAINER_IN_CONTAINER: true
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os_name: Linux-aarch64
+            os: ubuntu-22.04
+            target: aarch64-unknown-linux-gnu
+            binary: frequency
+          - os_name: Linux-x86_64
+            os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            binary: frequency
+          - os_name: macOS-x86_64
+            os: macOS-latest
+            target: x86_64-apple-darwin
+            binary: frequency
+          - os_name: macOS-aarch64
+            os: macOS-latest
+            target: aarch64-apple-darwin
+            binary: frequency
+        toolchain:
+          - stable
+    steps:
+      - name: Cross Build Worrkflow
+        run: echo "Cross Build ${{ matrix.platform.os_name }} with rust ${{ matrix.toolchain }}"
+      # TODO: Don't need this if we use ci-base-image
+      # - name: Install Required Packages for Linux
+      #   if: matrix.platform.os_name == 'Linux-x86_64' || matrix.platform.os_name == 'Linux-aarch64'
+      #   run: |
+      #     sudo apt-get update
+      #     sudo apt install -y protobuf-compiler libclang-dev clang cmake
+      #     export PROTOC=/usr/bin/protoc
+      #     echo "PROTOC=$PROTOC" >> $GITHUB_ENV
+      #     echo '********************************************************'
+      #     echo $PROTOC
+      #     protoc --version
+      #     echo '********************************************************'
+      # - name: Install Required Packages for macOS
+      #   if: matrix.platform.os_name == 'macOS-x86_64' || matrix.platform.os_name == 'macOS-aarch64'
+      #   run: |
+      #     brew install protobuf
+      #     export PROTOC=/opt/homebrew/bin/protoc
+      #     echo "PROTOC=$PROTOC" >> $GITHUB_ENV
+      #     echo '********************************************************'
+      #     echo $PROTOC
+      #     protoc --version
+      #     echo '********************************************************'
+      - uses: actions/checkout@v4
+      - name: Build Binary
+        uses: ./.github/workflows/common/rust-cross
+        with:
+          command: "build"
+          target: ${{ matrix.platform.target }}
+          toolchain: ${{ matrix.toolchain }}
+          args: "--features frequency-no-relay"
+          strip: true
+      # - name: Rename Binary (linux and macos)
+      #   run: mv target/${{ matrix.platform.target }}/release/frequency ${{ matrix.platform.binary }}
+      #   if: matrix.platform.os_name 
+
+
   build-binaries:
     needs: changes
     if: needs.changes.outputs.build-binary == 'true'
