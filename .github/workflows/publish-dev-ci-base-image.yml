@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - disabled-as-this-branch-does-not-exist
+      # - 779-build-arm-binaries-and-containers-for-linux-and-macos
       # - 1639-upgrade-to-polkadot-release-v100
 env:
   BIN_DIR: target/release
@@ -20,8 +21,34 @@ jobs:
       IMAGE_NAME: ci-base-image
       IMAGE_VERSION: 1.2.0
       BRANCH_NAME: ${{github.ref_name}}
-    runs-on: ubuntu-22.04
+    runs-on: macos-14
     steps:
+      - name: Install and Start Docker
+        run: |
+          brew install colima
+          brew install --cask docker
+          # open -a /Applications/Docker.app --args --unattended --accept-license
+          colima start
+
+      - name: Check Docker Daemon
+        run: |
+          docker --version
+          cat /var/log/docker.log || echo "Docker log not found"
+          ps aux | grep Docker
+
+          # Make sure Docker Daemon is running
+          echo "We are waiting for Docker to be up and running. It can take over 2 minutes..."
+          count=0
+          while ! /Applications/Docker.app/Contents/Resources/bin/docker info >/dev/null 2>&1; do
+            sleep 1
+            echo -n "."
+            count=$((count + 1))
+            if [ $count -gt 600 ]; then
+              echo "\cDocker failed to start"
+              exit 1
+            fi
+          done 
+
       - name: Check Out Repo
         uses: actions/checkout@v4
       - name: Set up QEMU
@@ -50,6 +77,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: tools/ci/docker
+          platforms: linux/amd64,linux/arm64
           push: true
           file: tools/ci/docker/ci-base-image.dockerfile
           tags: |
