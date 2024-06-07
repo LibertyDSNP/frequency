@@ -872,6 +872,7 @@ impl pallet_frequency_tx_payment::Config for Runtime {
 	type OnChargeCapacityTransaction = pallet_frequency_tx_payment::CapacityAdapter<Balances, Msa>;
 	type BatchProvider = CapacityBatchProvider;
 	type MaximumCapacityBatchLength = MaximumCapacityBatchLength;
+	type ConvertIntoAccountId32 = ConvertInto;
 }
 
 #[cfg(any(not(feature = "frequency-no-relay"), feature = "frequency-lint-check"))]
@@ -1154,7 +1155,7 @@ construct_runtime!(
 		Schemas: pallet_schemas::{Pallet, Call, Storage, Event<T>, Config<T>} = 62,
 		StatefulStorage: pallet_stateful_storage::{Pallet, Call, Storage, Event<T>} = 63,
 		Capacity: pallet_capacity::{Pallet, Call, Storage, Event<T>, FreezeReason} = 64,
-		FrequencyTxPayment: pallet_frequency_tx_payment::{Pallet, Call, Event<T>} = 65,
+		FrequencyTxPayment: pallet_frequency_tx_payment::{Pallet, Call, Event<T>, ValidateUnsigned} = 65,
 		Handles: pallet_handles::{Pallet, Call, Storage, Event<T>} = 66,
 	}
 );

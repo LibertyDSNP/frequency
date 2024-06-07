@@ -24,17 +24,26 @@ use pallet_transaction_payment::{FeeDetails, InclusionFee, OnChargeTransaction};
 use parity_scale_codec::{Decode, Encode};
 use scale_info::TypeInfo;
 use sp_runtime::{
-	traits::{DispatchInfoOf, Dispatchable, PostDispatchInfoOf, SignedExtension, Zero},
+	traits::{
+		Convert, DispatchInfoOf, Dispatchable, PostDispatchInfoOf, SignedExtension, Verify, Zero,
+	},
 	transaction_validity::{TransactionValidity, TransactionValidityError},
 	FixedPointOperand, Saturating,
 };
 use sp_std::prelude::*;
 
+use crate::types::PasskeyPayload;
 use common_primitives::{
 	capacity::{Nontransferable, Replenishable},
 	node::UtilityProvider,
+	utils::wrap_binary_data,
 };
+use coset::{CborSerializable, CoseKey, Label};
+use p256::{ecdsa::signature::Verifier, elliptic_curve::generic_array::GenericArray, EncodedPoint};
 pub use pallet::*;
+use parity_scale_codec::alloc::string::ToString;
+use sp_core::{crypto::AccountId32, hexdisplay::HexDisplay};
+use sp_io::hashing::sha2_256;
 pub use weights::*;
 
 mod payment;
@@ -167,6 +176,8 @@ pub mod pallet {
 		type MaximumCapacityBatchLength: Get<u8>;
 
 		type BatchProvider: UtilityProvider<OriginFor<Self>, <Self as Config>::RuntimeCall>;
+
+		type ConvertIntoAccountId32: Convert<Self::AccountId, AccountId32>;
 	}
 
 	#[pallet::event]
@@ -226,6 +237,54 @@ pub mod pallet {
 			);
 
 			T::BatchProvider::batch_all(origin, calls)
+		}
+
+		// TODO: do we need Pays::No?
+		#[pallet::call_index(2)]
+		#[pallet::weight({
+		let info = payload.passkey_call.call.get_dispatch_info();
+		(info.weight, info.class)
+		})]
+		pub fn passkey_proxy(
+			origin: OriginFor<T>,
+			payload: PasskeyPayload<T>,
+		) -> DispatchResultWithPostInfo {
+			ensure_none(origin)?;
+			let main_origin = T::RuntimeOrigin::from(frame_system::RawOrigin::Signed(
+				payload.passkey_call.account_id,
+			));
+			payload.passkey_call.call.dispatch(main_origin)
+		}
+	}
+
+	#[pallet::validate_unsigned]
+	impl<T: Config> ValidateUnsigned for Pallet<T> {
+		type Call = Call<T>;
+
+		fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
+			const PRIORITY: u64 = 100;
+
+			let signer = match call {
+				Call::passkey_proxy { payload } => {
+					let signer = payload.passkey_call.account_id.clone();
+					Self::check_account_signature(payload)?;
+					Self::check_passkey_signature(payload)?;
+
+					signer
+				},
+				_ => return Err(InvalidTransaction::Call.into()),
+			};
+
+			// TODO: check and increase nonce of signer
+			// TODO: additional verifications that will make this unsigned call secure from DOS attacks
+
+			Ok(ValidTransaction {
+				priority: PRIORITY,
+				requires: vec![],
+				provides: vec![("passkey", signer).encode()],
+				longevity: TransactionLongevity::max_value(),
+				propagate: true,
+			})
 		}
 	}
 }
@@ -313,6 +372,103 @@ impl<T: Config> Pallet<T> {
 		// `Bounded` maximum of its data type, which is not desired.
 		let capped_weight = weight.min(T::BlockWeights::get().max_block);
 		T::WeightToFee::weight_to_fee(&capped_weight)
+	}
+
+	/// Check Passkey P256 signature of the call in payload with the provided passkey public key
+	pub fn check_passkey_signature(
+		payload: &PasskeyPayload<T>,
+	) -> Result<(), TransactionValidityError> {
+		// deserialize to COSE key format and check the key
+		let cose_key = CoseKey::from_slice(&payload.passkey_public_key[..])
+			.map_err(|_| TransactionValidityError::Invalid(InvalidTransaction::Custom(1)))?;
+		let (_, x) = cose_key
+			.params
+			.iter()
+			.find(|(l, _)| l == &Label::Int(-2))
+			.ok_or(TransactionValidityError::Invalid(InvalidTransaction::Custom(2)))?;
+		let (_, y) = cose_key
+			.params
+			.iter()
+			.find(|(l, _)| l == &Label::Int(-3))
+			.ok_or(TransactionValidityError::Invalid(InvalidTransaction::Custom(3)))?;
+
+		// convert COSE format to P256 verifying key
+		let encoded_point =
+			EncodedPoint::from_affine_coordinates(
+				GenericArray::from_slice(&x.clone().into_bytes().map_err(|_| {
+					TransactionValidityError::Invalid(InvalidTransaction::Custom(4))
+				})?),
+				GenericArray::from_slice(&y.clone().into_bytes().map_err(|_| {
+					TransactionValidityError::Invalid(InvalidTransaction::Custom(4))
+				})?),
+				false,
+			);
+		let verify_key = p256::ecdsa::VerifyingKey::from_encoded_point(&encoded_point)
+			.map_err(|_| TransactionValidityError::Invalid(InvalidTransaction::Custom(5)))?;
+
+		let passkey_signature =
+			p256::ecdsa::DerSignature::from_bytes(&payload.passkey_signature[..])
+				.map_err(|_| TransactionValidityError::Invalid(InvalidTransaction::Custom(6)))?;
+
+		// extract the challenge from client_data and
+		// ensure the that the challenge is the same as the call payload
+		let client_data: serde_json::Value =
+			serde_json::from_slice(&payload.passkey_client_data_json)
+				.map_err(|_| TransactionValidityError::Invalid(InvalidTransaction::Custom(7)))?;
+		let extracted_challenge = match client_data {
+			serde_json::Value::Object(m) => {
+				let challenge = m
+					.get(&"challenge".to_string())
+					.ok_or(TransactionValidityError::Invalid(InvalidTransaction::Custom(8)))?;
+				if let serde_json::Value::String(base64_url_encoded) = challenge {
+					let decoded = base64_url::decode(&base64_url_encoded).map_err(|_| {
+						TransactionValidityError::Invalid(InvalidTransaction::Custom(9))
+					})?;
+					Ok(decoded)
+				} else {
+					Err(TransactionValidityError::Invalid(InvalidTransaction::Custom(10)))
+				}
+			},
+			_ => Err(TransactionValidityError::Invalid(InvalidTransaction::Custom(11))),
+		}?;
+
+		let encoded_payload = payload.passkey_call.encode();
+		log::debug!("pass_call challenge    {}", HexDisplay::from(&extracted_challenge));
+		log::debug!("pass_call scale encode {}", HexDisplay::from(&encoded_payload));
+		ensure!(
+			encoded_payload == extracted_challenge,
+			TransactionValidityError::Invalid(InvalidTransaction::Custom(12))
+		);
+
+		// prepare signing payload which is [authenticator || sha256(client_data_json)]
+		let mut passkey_signature_payload = payload.passkey_authenticator.to_vec();
+		passkey_signature_payload.extend_from_slice(&sha2_256(&payload.passkey_client_data_json));
+
+		// finally verify the passkey signature against the payload
+		verify_key
+			.verify(&passkey_signature_payload, &passkey_signature)
+			.map_err(|_| TransactionValidityError::Invalid(InvalidTransaction::BadProof))
+	}
+
+	/// Check the signature on passkey public key by the account id
+	pub fn check_account_signature(
+		payload: &PasskeyPayload<T>,
+	) -> Result<(), TransactionValidityError> {
+		let key: AccountId32 =
+			T::ConvertIntoAccountId32::convert((payload.passkey_call.account_id.clone()).clone());
+		// check signature for the account
+		let passkey_publickey_payload = wrap_binary_data(payload.passkey_public_key.clone().into());
+
+		let verified = payload
+			.passkey_call
+			.account_ownership_proof
+			.verify(&passkey_publickey_payload[..], &key);
+
+		if verified {
+			Ok(())
+		} else {
+			Err(TransactionValidityError::Invalid(InvalidTransaction::BadProof))
+		}
 	}
 }
 
@@ -418,7 +574,7 @@ where
 	) -> Result<(BalanceOf<T>, InitialPayment<T>), TransactionValidityError> {
 		let fee = pallet_transaction_payment::Pallet::<T>::compute_fee(len as u32, info, tip);
 		if fee.is_zero() {
-			return Ok((fee, InitialPayment::Free))
+			return Ok((fee, InitialPayment::Free));
 		}
 
 		<OnChargeTransactionOf<T> as OnChargeTransaction<T>>::withdraw_fee(
