@@ -11,9 +11,6 @@ clean:
 start:
 	./scripts/init.sh start-frequency-instant
 
-start-relay:
-	./scripts/init.sh start-relay-chain
-
 start-paseo-relay:
 	./scripts/init.sh start-paseo-relay-chain
 
@@ -43,10 +40,6 @@ start-manual-with-offchain:
 
 start-interval-with-offchain:
 	./scripts/init.sh start-frequency-interval with-offchain
-
-.PHONY: stop, stop-relay, stop-frequency-docker
-stop-relay:
-	./scripts/init.sh stop-relay-chain
 
 stop-paseo-relay:
 	./scripts/init.sh stop-paseo-relay-chain
