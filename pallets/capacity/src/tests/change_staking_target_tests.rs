@@ -1,6 +1,6 @@
 use super::{
 	mock::*,
-	testing_utils::{setup_provider, staking_events},
+	testing_utils::{capacity_events, setup_provider},
 };
 use crate::*;
 use common_primitives::msa::MessageSourceId;
@@ -229,7 +229,7 @@ fn change_staking_starget_emits_event_on_success() {
 			to_msa,
 			to_amount
 		));
-		let events = staking_events();
+		let events = capacity_events();
 
 		assert_eq!(
 			events.last().unwrap(),

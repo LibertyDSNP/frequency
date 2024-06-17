@@ -308,9 +308,10 @@ pub type Executive = frame_executive::Executive<
 	frame_system::ChainContext<Runtime>,
 	Runtime,
 	AllPalletsWithSystem,
-	(pallet_schemas::migration::v4::MigrateToV4<Runtime>,
-     pallet_capacity::migration::provider_boost_init::ProviderBoostInit<Runtime>,
-    ),
+	(
+		pallet_schemas::migration::v4::MigrateToV4<Runtime>,
+		pallet_capacity::migration::provider_boost_init::ProviderBoostInit<Runtime>,
+	),
 >;
 
 /// Opaque types. These are used by the CLI to instantiate machinery that don't need to know
