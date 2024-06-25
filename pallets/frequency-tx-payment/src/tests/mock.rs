@@ -219,11 +219,9 @@ impl pallet_capacity::Config for Test {
 	type EpochNumber = u32;
 	type CapacityPerToken = TestCapacityPerToken;
 	type RuntimeFreezeReason = RuntimeFreezeReason;
-	type RewardEra = u32;
 	type EraLength = ConstU32<5>;
 	type ProviderBoostHistoryLimit = ConstU32<6>;
 	type RewardsProvider = Capacity;
-	type ChangeStakingTargetThawEras = ConstU32<1>;
 	type MaxRetargetsPerRewardEra = ConstU32<5>;
 	type RewardPoolEachEra = ConstU64<10_000>;
 	type RewardPercentCap = TestRewardCap;
