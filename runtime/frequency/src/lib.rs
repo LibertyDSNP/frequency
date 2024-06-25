@@ -40,6 +40,7 @@ use sp_version::RuntimeVersion;
 
 use common_primitives::{
 	handles::*, messages::*, msa::*, node::*, rpc::RpcEvent, schema::*, stateful_storage::*,
+	capacity::*,
 };
 
 pub use common_runtime::{
@@ -506,7 +507,6 @@ impl pallet_capacity::Config for Runtime {
 	type EpochNumber = u32;
 	type CapacityPerToken = CapacityPerToken;
 	type RuntimeFreezeReason = RuntimeFreezeReason;
-	type RewardEra = u32;
 	type EraLength = ConstU32<{ 14 * DAYS }>;
 	type ProviderBoostHistoryLimit = ConstU32<30u32>;
 	type RewardsProvider = Capacity;
@@ -702,7 +702,7 @@ impl pallet_democracy::Config for Runtime {
 	type EnactmentPeriod = EnactmentPeriod;
 	type RuntimeEvent = RuntimeEvent;
 	type FastTrackVotingPeriod = FastTrackVotingPeriod;
-	type InstantAllowed = frame_support::traits::ConstBool<true>;
+	type InstantAllowed = ConstBool<true>;
 	type LaunchPeriod = LaunchPeriod;
 	type MaxProposals = DemocracyMaxProposals;
 	type MaxVotes = DemocracyMaxVotes;
@@ -1500,6 +1500,12 @@ impl_runtime_apis! {
 		}
 		fn validate_handle(base_handle: BaseHandle) -> bool {
 			Handles::validate_handle(base_handle.to_vec())
+		}
+	}
+
+	impl pallet_capacity_runtime_api::CapacityRuntimeApi<Block, AccountId> for Runtime {
+		fn list_unclaimed_rewards(who: AccountId) -> Vec<UnclaimedRewardInfoRPC> {
+			Capacity::list_unclaimed_rewards_rpc(who)
 		}
 	}
 

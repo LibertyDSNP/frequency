@@ -1,4 +1,5 @@
 //! Types for the Capacity Pallet
+use std::marker::PhantomData;
 use super::*;
 use frame_support::{BoundedVec, EqNoBound, PartialEqNoBound, RuntimeDebugNoBound};
 use parity_scale_codec::{Decode, Encode, EncodeLike, MaxEncodedLen};
@@ -7,6 +8,7 @@ use sp_runtime::{
 	traits::{AtLeast32BitUnsigned, CheckedAdd, CheckedSub, Get, Saturating, Zero},
 	BoundedBTreeMap, RuntimeDebug,
 };
+use common_primitives::capacity::RewardEra;
 
 #[cfg(any(feature = "runtime-benchmarks", test))]
 use sp_std::vec::Vec;
@@ -276,7 +278,7 @@ where
 #[derive(PartialEq, Eq, Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 #[scale_info(skip_type_params(T))]
 pub struct RewardPoolHistoryChunk<T: Config>(
-	BoundedBTreeMap<T::RewardEra, BalanceOf<T>, T::RewardPoolChunkLength>,
+	BoundedBTreeMap<RewardEra, BalanceOf<T>, T::RewardPoolChunkLength>,
 );
 impl<T: Config> Default for RewardPoolHistoryChunk<T> {
 	fn default() -> Self {
@@ -298,14 +300,14 @@ impl<T: Config> RewardPoolHistoryChunk<T> {
 
 	/// A wrapper for retrieving how much was provider_boosted in the given era
 	/// from the  BoundedBTreeMap
-	pub fn total_for_era(&self, reward_era: &T::RewardEra) -> Option<&BalanceOf<T>> {
+	pub fn total_for_era(&self, reward_era: &RewardEra) -> Option<&BalanceOf<T>> {
 		self.0.get(reward_era)
 	}
 
 	/// returns the range of 		eras in this chunk
 	/// Used in testing
-	pub fn era_range(&self) -> (T::RewardEra, T::RewardEra) {
-		let zero_reward_era: T::RewardEra = Zero::zero();
+	pub fn era_range(&self) -> (RewardEra, RewardEra) {
+		let zero_reward_era: RewardEra = Zero::zero();
 		let zero_balance: BalanceOf<T> = Zero::zero();
 		let (first, _vf) = self.0.first_key_value().unwrap_or((&zero_reward_era, &zero_balance));
 		let (last, _vl) = self.0.last_key_value().unwrap_or((&zero_reward_era, &zero_balance));
@@ -315,15 +317,15 @@ impl<T: Config> RewardPoolHistoryChunk<T> {
 	/// A wrapper for adding a new reward_era_entry to the BoundedBTreeMap
 	pub fn try_insert(
 		&mut self,
-		reward_era: T::RewardEra,
+		reward_era: RewardEra,
 		total: BalanceOf<T>,
-	) -> Result<Option<BalanceOf<T>>, (T::RewardEra, BalanceOf<T>)> {
+	) -> Result<Option<BalanceOf<T>>, (RewardEra, BalanceOf<T>)> {
 		self.0.try_insert(reward_era, total)
 	}
 
 	/// Get the earliest reward era stored in this BoundedBTreeMap
 	/// Used only in testing.
-	pub fn earliest_era(&self) -> Option<&T::RewardEra> {
+	pub fn earliest_era(&self) -> Option<&RewardEra> {
 		if let Some((first_era, _first_total)) = self.0.first_key_value() {
 			return Some(first_era);
 		}
@@ -340,7 +342,7 @@ impl<T: Config> RewardPoolHistoryChunk<T> {
 #[derive(PartialEq, Eq, Clone, Encode, Decode, RuntimeDebug, TypeInfo, MaxEncodedLen)]
 #[scale_info(skip_type_params(T))]
 pub struct ProviderBoostHistory<T: Config>(
-	BoundedBTreeMap<T::RewardEra, BalanceOf<T>, T::ProviderBoostHistoryLimit>,
+	BoundedBTreeMap<RewardEra, BalanceOf<T>, T::ProviderBoostHistoryLimit>,
 );
 
 impl<T: Config> Default for ProviderBoostHistory<T> {
@@ -360,7 +362,7 @@ impl<T: Config> ProviderBoostHistory<T> {
 	/// returns the total number of history items
 	pub fn add_era_balance(
 		&mut self,
-		reward_era: &T::RewardEra,
+		reward_era: &RewardEra,
 		add_amount: &BalanceOf<T>,
 	) -> Option<usize> {
 		if let Some(entry) = self.0.get_mut(&reward_era) {
@@ -388,7 +390,7 @@ impl<T: Config> ProviderBoostHistory<T> {
 	/// Otherwise returns Some(history_count)
 	pub fn subtract_era_balance(
 		&mut self,
-		reward_era: &T::RewardEra,
+		reward_era: &RewardEra,
 		subtract_amount: &BalanceOf<T>,
 	) -> Option<usize> {
 		if self.count().is_zero() {
@@ -419,7 +421,7 @@ impl<T: Config> ProviderBoostHistory<T> {
 	}
 
 	/// A wrapper for the key/value retrieval of the BoundedBTreeMap.
-	pub(crate) fn get_entry_for_era(&self, reward_era: &T::RewardEra) -> Option<&BalanceOf<T>> {
+	pub(crate) fn get_entry_for_era(&self, reward_era: &RewardEra) -> Option<&BalanceOf<T>> {
 		self.0.get(reward_era)
 	}
 
@@ -428,7 +430,7 @@ impl<T: Config> ProviderBoostHistory<T> {
 	///
 	/// Note there is no sense of what the current era is; subsequent calls could return a different result
 	/// if 'reward_era' is the current era and there has been a boost or unstake.
-	pub(crate) fn get_amount_staked_for_era(&self, reward_era: &T::RewardEra) -> BalanceOf<T> {
+	pub(crate) fn get_amount_staked_for_era(&self, reward_era: &RewardEra) -> BalanceOf<T> {
 		// this gives an ordered-by-key Iterator
 		let mut bmap_iter = self.0.iter();
 		let mut eligible_amount: BalanceOf<T> = Zero::zero();
@@ -479,19 +481,20 @@ pub struct RetargetInfo<T: Config> {
 	/// How many times the account has retargeted this RewardEra
 	pub retarget_count: u32,
 	/// The last RewardEra they retargeted
-	pub last_retarget_at: T::RewardEra,
+	pub last_retarget_at: RewardEra,
+	_marker: PhantomData<T>,
 }
 
 impl<T: Config> Default for RetargetInfo<T> {
 	fn default() -> Self {
-		Self { retarget_count: 0u32, last_retarget_at: Zero::zero() }
+		Self { retarget_count: 0u32, last_retarget_at: Zero::zero(), _marker: Default::default() }
 	}
 }
 
 impl<T: Config> RetargetInfo<T> {
 	/// Increment retarget count and return Some() or
 	/// If there are too many, return None
-	pub fn update(&mut self, current_era: T::RewardEra) -> Option<()> {
+	pub fn update(&mut self, current_era: RewardEra) -> Option<()> {
 		let max_retargets = T::MaxRetargetsPerRewardEra::get();
 		if self.retarget_count.ge(&max_retargets) && self.last_retarget_at.eq(&current_era) {
 			return None;
@@ -523,11 +526,6 @@ pub trait ProviderBoostRewardsProvider<T: Config> {
 	/// Return the size of the reward pool using the current economic model
 	fn reward_pool_size(total_staked: BalanceOf<T>) -> BalanceOf<T>;
 
-	/// Return the list of unclaimed rewards  for `accountId`, using the current economic model
-	fn staking_reward_totals(
-		account_id: Self::AccountId,
-	) -> Result<BoundedVec<UnclaimedRewardInfo<T>, T::ProviderBoostHistoryLimit>, DispatchError>;
-
 	/// Calculate the reward for a single era.  We don't care about the era number,
 	/// just the values.
 	fn era_staking_reward(
@@ -542,30 +540,23 @@ pub trait ProviderBoostRewardsProvider<T: Config> {
 }
 
 /// Result of checking a Boost History item to see if it's eligible for a reward.
-#[derive(Copy, Clone, Encode, Eq, Decode, RuntimeDebug, MaxEncodedLen, PartialEq, TypeInfo)]
+#[derive(Copy, Clone, Default, Encode, Eq, Decode, RuntimeDebug, MaxEncodedLen, PartialEq, TypeInfo)]
 #[scale_info(skip_type_params(T))]
-pub struct UnclaimedRewardInfo<T: Config> {
+pub struct UnclaimedRewardInfo<Balance, BlockNumber >
+where
+	Balance: AtLeast32BitUnsigned,
+	BlockNumber: AtLeast32BitUnsigned,
+{
 	/// The Reward Era for which this reward was earned
-	pub reward_era: T::RewardEra,
+	pub reward_era: RewardEra,
 	/// When this reward expires, i.e. can no longer be claimed
-	pub expires_at_block: BlockNumberFor<T>,
+	pub expires_at_block: BlockNumber,
 	/// The total staked in this era as of the current block
-	pub staked_amount: BalanceOf<T>,
+	pub staked_amount: Balance,
 	/// The amount staked in this era that is eligible for rewards.  Does not count additional amounts
 	/// staked in this era.
-	pub eligible_amount: BalanceOf<T>,
+	pub eligible_amount: Balance,
 	/// The amount in token of the reward (only if it can be calculated using only on chain data)
-	pub earned_amount: BalanceOf<T>,
+	pub earned_amount: Balance,
 }
 
-impl<T: Config> Default for UnclaimedRewardInfo<T> {
-	fn default() -> Self {
-		Self {
-			reward_era: 1u32.into(),
-			expires_at_block: 0u32.into(),
-			staked_amount: 0u32.into(),
-			eligible_amount: 0u32.into(),
-			earned_amount: 0u32.into(),
-		}
-	}
-}

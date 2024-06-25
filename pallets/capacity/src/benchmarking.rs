@@ -38,11 +38,11 @@ pub fn set_up_epoch<T: Config>(current_block: BlockNumberFor<T>, current_epoch: 
 }
 
 pub fn set_era_and_reward_pool_at_block<T: Config>(
-	era_index: T::RewardEra,
+	era_index: RewardEra,
 	started_at: BlockNumberFor<T>,
 	total_staked_token: BalanceOf<T>,
 ) {
-	let era_info: RewardEraInfo<T::RewardEra, BlockNumberFor<T>> =
+	let era_info: RewardEraInfo<RewardEra, BlockNumberFor<T>> =
 		RewardEraInfo { era_index, started_at };
 	CurrentEraInfo::<T>::set(era_info);
 	CurrentEraProviderBoostTotal::<T>::set(total_staked_token)
@@ -149,7 +149,7 @@ benchmarks! {
 		let total_staked_token: BalanceOf<T> = 5_000u32.into();
 		let started_at: BlockNumberFor<T> = current_block.saturating_sub(<T as Config>::EraLength::get().into());
 
-		let current_era: T::RewardEra = (history_limit + 1u32).into();
+		let current_era: RewardEra = (history_limit + 1u32).into();
 		CurrentEraInfo::<T>::set(RewardEraInfo{ era_index: current_era, started_at });
 		fill_reward_pool_chunks::<T>();
 	}: {
